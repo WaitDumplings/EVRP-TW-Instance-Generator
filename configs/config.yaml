@@ -1,0 +1,106 @@
+# config.yaml
+# Geometric and Quantity Parameters
+area_size: [[0.0, 100.0], [0.0, 100.0]]     # km
+num_customers: 5
+num_charging_stations: 3
+num_cluster: 5
+instance_type_distribution: {R: 0.5, C: 0.3, RC: 0.2}
+dist_fun: "2-norm"
+set_edge: False
+test_instance_type: "C"
+# test_timewindow_type: "Wide"
+
+# Vehicle
+# vehicle_ac_limit_kw: None
+vehicles_profiles:
+  - name: "Rivian_EDV"                      # Amazon-Rivian Electric Truck (Last-Mile)
+    type: "last-mile"
+    speed: 40.0                             # km/h  (Within City)
+    battery_capacity: 135                   # kWh
+    consumption_per_distance: 0.5           # kWh/km
+    loading_capacity: 1.2                   # tons (Capacity)
+    notes: "Custom Rivian EDV used by Amazon; ~150 miles (~241 km) range."
+
+  - name: "Mercedes_eActros_600"            # Amazon (Middle-Mile)
+    type: "middle-mile"
+    speed: 65.0                             # km/h  (Highway)
+    battery_capacity: 621                   # kWh
+    consumption_per_distance: 1.24          # kWh/km
+    loading_capacity: 22.0                  # tons (Capacity)
+    notes: "Mercedes-Benz eActros 600 heavy-duty truck; ~500 km (~311 miles) range."
+
+  - name: "Slate_Pickup"                    # Bezos Earth Fund (Light-Duty)
+    type: "light-duty"
+    speed: 50.0                             # km/h
+    battery_capacity: 52.7                  # kWh
+    consumption_per_distance: 0.22          # kWh/km
+    loading_capacity: 0.65                  # tons (Capacity)
+    notes: "Slate Auto low-cost EV pickup truck (under $20k after incentives)."
+
+# Charging Station
+charging_profiles:
+  - name: "AC_L2_11kW"
+    type: "AC_L2"
+    power_kw: 11.5
+    efficiency: 0.92          
+  - name: "DC_Fast_150kW"
+    type: "DC_Fast"
+    power_kw: 150.0
+    efficiency: 0.95
+  - name: "DC_Ultra_350kW"
+    type: "DC_Ultra"
+    power_kw: 350.0
+    efficiency: 0.96
+
+# instance time (hh:mm)
+instance_time_range: ["00:00", "24:00"]
+working_schedule_profiles:
+    - name: "Standard_Working_Hours"
+      start: "8:00"
+      end: "20:00"
+
+# time window configs
+time_window_type_distribution: {Narrow: 0.0, Wide: 1.0}
+
+# Naive Method to generate time window width
+time_window_narrow_config: {alpha: 0.05, beta: 0.005}   # fractions of the total time horizon
+time_window_wide_config: {alpha: 0.5, beta: 0.2}
+
+# Demand Parameters
+# demand_policy: ["20_80", "uniform", "random"]
+demand_policy_list: ["20_80","Random"]
+demand_config:
+    - policy: "20_80"
+      small_package_weight_ratio: 0.2 # small package := weight <= 20% * Capacity.
+
+    - policy: "uniform"
+    - policy: "random"
+
+# Service Time
+servicetime_type_distribution: ["Random"]
+servicetime_type_config:
+    - policy: "Random"
+      integer: True
+      round_digits: 2
+      st_range: [1, 10]
+
+# Random Seed
+rng_seed: 42
+
+# Auxiliary Parameters for Clustered and RC Instances
+min_radius_frac_of_R: 0.25
+max_radius_frac_of_R: 0.9
+relax_min_radius: true
+max_trials_per_cs: 5000
+dummy_size: 5
+rc_random_ratio: 0.5
+relax: True
+
+# Perturb Parameters (format: features + "_p" for the convenience)
+add_perturb: False
+perturb:
+  - num_customers_p: [-5, 5]
+  - num_charging_stations_p: [-3, 3] 
+  - speed_p: [-0.1, 0.1]  # v in [0.9v, 1.1v]
+  - num_cluster_p: [-2, 2]
+
