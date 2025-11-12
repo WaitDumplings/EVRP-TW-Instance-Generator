@@ -4,6 +4,9 @@ from typing import Dict, Tuple, Protocol
 import numpy as np
 from evrptw_gen.utils.geometry import clamp, clamp_rect
 from evrptw_gen.utils.feasibility import effective_charging_power_kw, cus_min_time_to_depot
+from .rc_customer_assign import RCPolicies
+from .cluster_assignment import ClusterAssignmentPolicies
+from .cluster_number import ClusterNumberPolicies
 
 def dist_vec(a, b):
     """Vectorized distance between two sets of points a and b.
@@ -59,16 +62,13 @@ def _process_serve_time(env, time_customer_depot, time_depot_customer, service_t
         svc_min     = svc * 60.0
 
         # Earliest start: cannot begin service before we arrive or before work starts
-        earliest_service_time = np.maximum(inst_start + dep_cus_min, work_start)
+        earliest_service_time = max(work_start, inst_start) + dep_cus_min
 
         # Latest start: must finish service and still be able to return before instance end,
         # and also cannot start after work_end.
         # latest_by_instance = inst_end - cus_dep_min - svc_min
         # latest_by_working  = work_end
-        latest_service_time = np.minimum(work_end, inst_end - cus_dep_min) - svc_min
-
-        # Optional: clip to [-inf, +inf] sensible domain (no-op but documents intent)
-        # latest_service_time = np.minimum(latest_service_time, work_end)
+        latest_service_time = np.minimum(work_end, inst_end - cus_dep_min - svc_min)
 
         return earliest_service_time, latest_service_time
 
@@ -87,6 +87,9 @@ class CustomerPositionPolicy(Protocol):
 class RandomPositionPolicy:
     NAME = "R"
 
+    def __call__(self, *args, **kwargs):
+        return self.sample(*args, **kwargs)
+ 
     def sample(self,
                env,
                depot_pos,
@@ -95,17 +98,18 @@ class RandomPositionPolicy:
                time_css_to_depot,   # (S,) hours: CS -> Depot
                service_time_policy,
                rng,
-               k = None):
+               k = None,
+               num_customers = None):
 
-        num_customers = int(env['num_customers'])
+        if num_customers is None:
+            num_customers = int(env['num_customers']) 
         (xmin_area, xmax_area), (ymin_area, ymax_area) = env['area_size']
         R = float(env["battery_capacity"]) / float(env["consumption_per_distance"])
         rng = env.get("rng", np.random.default_rng())
         dummy_size = int(env.get("dummy_size", 5))
-        radius = float(env['battery_capacity']) / float(env['consumption_per_distance'])
+        radius_cus = float(env['battery_capacity']) / float(env['consumption_per_distance']) / 2
         speed = float(env['speed'])              # km/h
         p_eff = effective_charging_power_kw(env) # kW
-        cpd  = float(env['consumption_per_distance'])
 
         customers = []
         time_customer_depot = []   # fastest return time (hours)
@@ -145,7 +149,7 @@ class RandomPositionPolicy:
                 cs_positions=cs_pos,                              # (S,2)
                 cs_time_to_depot=time_css_to_depot,               # CS -> Depot
                 time_depot_to_cs=time_depot_to_css,               # Depot -> CS
-                radius=radius,
+                radius=radius_cus,
                 speed=speed,
                 p_eff=p_eff,
                 service_times=service_times
@@ -187,6 +191,10 @@ class RandomPositionPolicy:
         
 class ClusterPositionPolicy:
     NAME = "C"
+
+    def __call__(self, *args, **kwargs):
+        return self.sample(*args, **kwargs)
+
     def sample(self,
                 env, 
                 depot_pos, 
@@ -195,22 +203,29 @@ class ClusterPositionPolicy:
                 time_depot_to_css,
                 service_time_policy, 
                 rng,
-                k):
+                k,
+                num_customers = None):
+        if num_customers is None:
+            num_customers = int(env['num_customers']) 
+
         dummy_size = int(env.get("dummy_size", 5))
-        num_customers = int(env['num_customers'])
         css_positions = np.concatenate([depot_pos.reshape(1,2), cs_pos], axis=0)  # (S+1, 2)
-        radius = float(env['battery_capacity']) / float(env['consumption_per_distance']) / 2 # round trip radius
+        radius_cus = float(env['battery_capacity']) / float(env['consumption_per_distance']) / 2 # round trip radius
         max_iter = 100
         dist_threshold = 10.0  # min distance between cluster centers
-        num_customers_per_cluster = int(env['num_customers_per_cluster'])
-        # TODO: 实现簇中心 + 簇内采样 + 可行性时间
+
+        num_customers_per_cluster_list = env['num_customers_per_cluster']
+        k = num_customers_per_cluster_list.shape[0]
+        speed = float(env['speed'])              # km/h
+        p_eff = effective_charging_power_kw(env) # kW
+        
 
         # valid sample area
         for (cx, cy) in css_positions:
-            min_x = max(env['area_size'][0][0], cx - radius)
-            max_x = min(env['area_size'][0][1], cx + radius)
-            min_y = max(env['area_size'][1][0], cy - radius)
-            max_y = min(env['area_size'][1][1], cy + radius)
+            min_x = max(env['area_size'][0][0], cx - radius_cus)
+            max_x = min(env['area_size'][0][1], cx + radius_cus)
+            min_y = max(env['area_size'][1][0], cy - radius_cus)
+            max_y = min(env['area_size'][1][1], cy + radius_cus)
         
         # Part1: 采样簇中心
         # 采用Possion-disk的方法，确保簇中心之间的最小距离（但是这个阈值怎么决定呢？）
@@ -227,7 +242,7 @@ class ClusterPositionPolicy:
 
                 # check feasibility:
                 candidate = np.array([cx, cy])
-                if dist_vec(candidate.reshape(1,2), css_positions).min() > radius - 1e-6:
+                if dist_vec(candidate.reshape(1,2), css_positions).min() > radius_cus - 1e-6:
                     continue
 
                 # check distance to existing cluster centers
@@ -237,7 +252,6 @@ class ClusterPositionPolicy:
                     break
                 else:
                     try_iter += 1
-        breakpoint()
         customers = []
         time_depot_customer = []
         time_customer_depot = []
@@ -246,33 +260,59 @@ class ClusterPositionPolicy:
         # Part2: 簇内采样
         # Policy1: Isotropic
         lb, ub = 0.7, 1.0
-        for _ in range(k):
-            customers_k = []
-            time_depot_to_customer_k = []
-            time_customer_to_depot_k = []
-            service_times_k = []
+        for idx in range(k):
+            customers_k = np.zeros((0,2))
+            time_depot_to_customer_k = np.zeros((0,))
+            time_customer_to_depot_k = np.zeros((0,))
+            service_times_k = np.zeros((0,))
 
-            cluster_range = random.uniform(lb, ub) * dist_threshold
-
-            while len(customer_k) < num_customers_per_cluster:
+            cluster_range = np.random.uniform(lb, ub) * dist_threshold
+            num_customers_per_cluster = num_customers_per_cluster_list[idx]
+            
+            while len(customers_k) < num_customers_per_cluster:
+                service_times = service_time_policy.build(env, num_customers=num_customers_per_cluster * dummy_size, rng=rng)  # (B,) hours
                 angle = rng.uniform(0, 2*np.pi, size = num_customers_per_cluster * dummy_size)
                 r = rng.uniform(0, cluster_range, size = num_customers_per_cluster * dummy_size)
-                cx = cluster_positions[_][0] + r * np.cos(angle)
-                cy = cluster_positions[_][1] + r * np.sin(angle)
+                cx = cluster_positions[idx][0] + r * np.cos(angle)
+                cy = cluster_positions[idx][1] + r * np.sin(angle)
 
-                candidate = np.array([cx, cy])
+                candidate = np.stack((cx, cy), axis=1)
                 # check feasibility:
-                raise NotImplementedError
+                # Compute feasibility & minimal times for this batch
+                out = cus_min_time_to_depot(
+                    env=env,
+                    depot_pos=np.asarray(depot_pos).reshape(-1)[:2],  # (2,)
+                    candidate_cus_pos=candidate,                      # (B,2)
+                    cs_positions=cs_pos,                              # (S,2)
+                    cs_time_to_depot=time_css_to_depot,               # CS -> Depot
+                    time_depot_to_cs=time_depot_to_css,               # Depot -> CS
+                    radius=radius_cus,
+                    speed=speed,
+                    p_eff=p_eff,
+                    service_times=service_times
+                )
 
-                customers_k.append(candidate)
+                feas_vec, min_time_cus_dep, min_time_dep_cus = out  # (B,), (B,), (B,)
+                # Keep only feasible candidates from this batch
+                if np.any(feas_vec):
+                    customers_k = np.concatenate((customers_k, candidate[feas_vec, :]), axis=0)
+                    time_customer_to_depot_k = np.concatenate((time_customer_to_depot_k, min_time_cus_dep[feas_vec]), axis=0)
+                    time_depot_to_customer_k = np.concatenate((time_depot_to_customer_k, min_time_dep_cus[feas_vec]), axis=0)
+                    service_times_k = np.concatenate((service_times_k, service_times[feas_vec]), axis=0)
+
             customers_k = customers_k[:num_customers_per_cluster]
             time_depot_to_customer_k = time_depot_to_customer_k[:num_customers_per_cluster]
             time_customer_to_depot_k = time_customer_to_depot_k[:num_customers_per_cluster]
             service_times_k = service_times_k[:num_customers_per_cluster]
+
             customers.append(customers_k)
+            time_depot_customer.append(time_depot_to_customer_k)
+            time_customer_depot.append(time_customer_to_depot_k)
+            service_times_list.append(service_times_k)
+
         customers = np.vstack(customers)  # (num_customers, 2)
-        time_depot_customer = np.hstack(time_depot_to_customer)  # (num_customers,)
-        time_customer_depot = np.hstack(time_customer_to_depot)  # (num_customers,)
+        time_depot_customer = np.hstack(time_depot_customer)  # (num_customers,)
+        time_customer_depot = np.hstack(time_customer_depot)  # (num_customers,)
         service_times_list = np.hstack(service_times_list)          # (num
 
         # Policy2: Anisotropic (ellipse)
@@ -292,42 +332,72 @@ class ClusterPositionPolicy:
 
 class MixedRCPositionPolicy:
     NAME = "RC"
-    def __init__(self, random_policy: CustomerPositionPolicy = None, cluster_policy: CustomerPositionPolicy = None):
+
+    def __call__(self, *args, **kwargs):
+        return self.sample(*args, **kwargs)
+
+    def __init__(self, env, random_policy = None, cluster_policy = None):
+        self.rc_policies = RCPolicies.from_env(env)
         self.random_policy = random_policy or RandomPositionPolicy()
         self.cluster_policy = cluster_policy or ClusterPositionPolicy()
+        self.cluster_number_fun = ClusterNumberPolicies.from_env(env)  
+        self.num_customers_per_cluster = ClusterAssignmentPolicies.from_env(env)
+            
+    def sample(self,
+                env, 
+                depot_pos, 
+                cs_pos,
+                time_css_to_depot,
+                time_depot_to_css,
+                service_time_policy, 
+                rng,
+                k,
+                num_customers = None):
 
-    def sample(self, env, depot_pos, cs_pos, time_depot_to_css, service_time_policy, rng):
-        N = int(env.get('num_customers', 0))
-        if N <= 0:
-            return (np.zeros((0, 2), dtype=float),
-                    np.zeros((0,), dtype=float),
-                    np.zeros((0,), dtype=float))
-        ratio = float(env.get('rc_random_ratio', 0.5))
-        n_r = int(round(N * ratio)); n_c = N - n_r
+            if num_customers == None:
+                num_customers = env['num_customers']
 
-        env_r = dict(env); env_r['num_customers'] = n_r
-        env_c = dict(env); env_c['num_customers'] = n_c
+            num_random_customer, num_cluster_customer = self.rc_policies.build(env, rng = rng)
 
-        pos_r = np.zeros((0,2)); d2r = np.zeros((0,)); r2d = np.zeros((0,))
-        pos_c = np.zeros((0,2)); d2c = np.zeros((0,)); c2d = np.zeros((0,))
-        if n_r > 0:
-            pos_r, d2r, r2d = self.random_policy.sample(env_r, depot_pos, cs_pos, time_depot_to_css, rng)
-        if n_c > 0:
-            pos_c, d2c, c2d = self.cluster_policy.sample(env_c, depot_pos, cs_pos, time_depot_to_css, rng)
+            cluster_number = self.cluster_number_fun.build(env, rng=rng)
+            assignments = self.num_customers_per_cluster.build(env, cluster_number, rng=rng, num_customers = num_cluster_customer)
+            env['num_customers_per_cluster'] = assignments
 
-        pos = np.vstack([pos_r, pos_c]) if n_r and n_c else (pos_r if n_r else pos_c)
-        t_dep = np.concatenate([d2r, d2c]) if n_r and n_c else (d2r if n_r else d2c)
-        t_ret = np.concatenate([r2d, c2d]) if n_r and n_c else (r2d if n_r else c2d)
+            random_output = self.random_policy(env, 
+                                               depot_pos, 
+                                               cs_pos,
+                                               time_css_to_depot,
+                                               time_depot_to_css,
+                                               service_time_policy, 
+                                               rng,
+                                               k,
+                                               num_customers = num_random_customer)
 
-        labels = (np.concatenate([np.ones(n_r, dtype=bool), np.zeros(n_c, dtype=bool)])
-                  if (n_r and n_c) else (np.ones(n_r, dtype=bool) if n_r else np.zeros(n_c, dtype=bool)))
-        perm = rng.permutation(len(labels)) if len(labels) > 0 else np.arange(0)
-        pos, t_dep, t_ret, labels = pos[perm], t_dep[perm], t_ret[perm], labels[perm]
-
-        env['_rc_mask'] = labels  # True->R, False->C
-        return pos, t_dep, t_ret
+            cluster_output = self.cluster_policy(env, 
+                                                depot_pos, 
+                                                cs_pos,
+                                                time_css_to_depot,
+                                                time_depot_to_css,
+                                                service_time_policy, 
+                                                rng,
+                                                k,
+                                                num_customers = num_cluster_customer) 
 
 
+            random_customers, random_service_time, random_t_earliest, random_t_latest = random_output
+            cluster_customers, clusterservice_time, cluster_t_earliest, cluster_t_latest = cluster_output
+
+            customers = np.concatenate((random_customers, cluster_customers), axis = 0)
+            t_earliest = np.concatenate((random_t_earliest, cluster_t_earliest))
+            t_latest = np.concatenate((random_t_latest, cluster_t_latest))
+            service_times_list = np.concatenate((random_service_time, clusterservice_time))
+
+            return (
+                np.asarray(customers, dtype=float),
+                np.asarray(service_times_list, dtype=float),   # hours
+                np.asarray(t_earliest, dtype=float),           # minutes
+                np.asarray(t_latest, dtype=float),             # minutes
+            )
 class CustomerPositionPolicies:
     REGISTRY = {
         "R": RandomPositionPolicy,
@@ -368,5 +438,5 @@ class CustomerPositionPolicies:
             raise ValueError(f"Unknown instance_type: {choice}")
 
         env["instance_type"] = choice  # record sampled type for reference/logging
-        return cls.REGISTRY[choice]()
+        return cls.REGISTRY[choice](env)
 

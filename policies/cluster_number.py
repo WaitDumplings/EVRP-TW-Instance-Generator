@@ -18,7 +18,7 @@ class FixedClusterNumberPolicy:
     NAME = "Fixed"
 
     def build(self, env: Dict, rng: np.random.Generator) -> np.ndarray:
-        cluster_number = int(env.get("cluster_number", 3))
+        cluster_number = int(env.get("num_cluster", 5))
         return cluster_number
 
 class ClusterNumberPolicies:

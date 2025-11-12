@@ -116,6 +116,7 @@ class WideTWPolicy:
         ub = float(env["working_endTime"])
  
         if np.any(t_earliest > t_latest + 1e-6):
+            breakpoint()
             raise ValueError("t_earliest cannot be greater than t_latest for any customer.")
 
         centers = t_earliest + (t_latest - t_earliest) * np.random.rand(len(t_earliest))

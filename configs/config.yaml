@@ -1,14 +1,19 @@
 # config.yaml
 # Geometric and Quantity Parameters
 area_size: [[0.0, 100.0], [0.0, 100.0]]     # km
-num_customers: 5
+num_customers: 100
 num_charging_stations: 3
 num_cluster: 5
 instance_type_distribution: {R: 0.5, C: 0.3, RC: 0.2}
 dist_fun: "2-norm"
 set_edge: False
-test_instance_type: "C"
+test_instance_type: "RC"
 # test_timewindow_type: "Wide"
+
+
+# Test RC
+random_customer_ratio: 0.2
+cluster_customer_ratio: 0.8
 
 # Vehicle
 # vehicle_ac_limit_kw: None
