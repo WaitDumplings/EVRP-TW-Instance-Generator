@@ -38,7 +38,9 @@ def save_instances(instances, save_path, template='solomon'):
         timestamp = int(time.time())
         
         for i in range(len(instances)):
-            save_file_name = f'solomon_dataset_{i}_{timestamp}.txt'
+            time_window_type = instances[i]['env']['time_window_type']
+            instance_type = instances[i]['env']['instance_type']
+            save_file_name = f'solomon_dataset_{i}_{instance_type}_{time_window_type}_{timestamp}.txt'
 
             inst = instances[i]
             instance_end_time = inst['env'].get('instance_endTime', 1440.0) / 60
@@ -84,8 +86,8 @@ def save_instances(instances, save_path, template='solomon'):
                     if arr.size < 6:
                         raise ValueError(f"Customer row must have 6 numbers (x,y,demand,ready,due,service), got: {c}")
                     x, y, demand, ready, due, service = arr[:6]
-                    ready /= 60.0  # convert minutes to hours
-                    due   /= 60.0
+                    ready  # convert minutes to hours
+                    due
 
                     line = (
                         f"C{k}         c          "
@@ -110,8 +112,10 @@ def plot_instance(instances, save_path):
     timestamp = int(time.time())
 
     for i in range(len(instances)):
-        save_file_name = f'instance_{i}_{timestamp}.png'
         inst = instances[i]
+        time_window_type = inst['env']['time_window_type']
+        instance_type = inst['env']['instance_type']
+        save_file_name = f'instance_{i}_{instance_type}_{time_window_type}_{timestamp}.png'
 
         # --- extract & sanitize points ---
         depot_pos = _to_2d_points(inst['depot'])

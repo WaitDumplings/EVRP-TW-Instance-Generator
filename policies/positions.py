@@ -4,6 +4,8 @@ from typing import Dict, Tuple, Protocol
 import numpy as np
 from evrptw_gen.utils.geometry import clamp, clamp_rect
 from evrptw_gen.utils.feasibility import effective_charging_power_kw, cus_min_time_to_depot
+from evrptw_gen.utils.energy_consumption_model import consumption_model
+
 from .rc_customer_assign import RCPolicies
 from .cluster_assignment import ClusterAssignmentPolicies
 from .cluster_number import ClusterNumberPolicies
@@ -73,6 +75,7 @@ def _process_serve_time(env, time_customer_depot, time_depot_customer, service_t
         return earliest_service_time, latest_service_time
 
 class CustomerPositionPolicy(Protocol):
+
     def sample(
         self,
         env: Dict,
@@ -89,7 +92,10 @@ class RandomPositionPolicy:
 
     def __call__(self, *args, **kwargs):
         return self.sample(*args, **kwargs)
- 
+
+    def __init__(self, env = None):
+        pass
+
     def sample(self,
                env,
                depot_pos,
@@ -98,16 +104,17 @@ class RandomPositionPolicy:
                time_css_to_depot,   # (S,) hours: CS -> Depot
                service_time_policy,
                rng,
-               k = None,
-               num_customers = None):
+               num_customers = None,
+               energy_consumption_model_type = None):
 
         if num_customers is None:
             num_customers = int(env['num_customers']) 
+        consumption_per_distance = consumption_model(env, model_type = energy_consumption_model_type)
         (xmin_area, xmax_area), (ymin_area, ymax_area) = env['area_size']
-        R = float(env["battery_capacity"]) / float(env["consumption_per_distance"])
+        R = float(env["battery_capacity"]) / consumption_per_distance
         rng = env.get("rng", np.random.default_rng())
         dummy_size = int(env.get("dummy_size", 5))
-        radius_cus = float(env['battery_capacity']) / float(env['consumption_per_distance']) / 2
+        radius_cus = (float(env['battery_capacity']) / consumption_per_distance) / 2
         speed = float(env['speed'])              # km/h
         p_eff = effective_charging_power_kw(env) # kW
 
@@ -195,6 +202,11 @@ class ClusterPositionPolicy:
     def __call__(self, *args, **kwargs):
         return self.sample(*args, **kwargs)
 
+
+    def __init__(self, env):
+        self.cluster_number_fun = ClusterNumberPolicies.from_env(env)  
+        self.num_customers_per_cluster = ClusterAssignmentPolicies.from_env(env)
+
     def sample(self,
                 env, 
                 depot_pos, 
@@ -203,19 +215,22 @@ class ClusterPositionPolicy:
                 time_depot_to_css,
                 service_time_policy, 
                 rng,
-                k,
-                num_customers = None):
+                num_customers = None,
+                energy_consumption_model_type = None):
+
         if num_customers is None:
             num_customers = int(env['num_customers']) 
-
+        consumption_per_distance = consumption_model(env, model_type = energy_consumption_model_type)
         dummy_size = int(env.get("dummy_size", 5))
         css_positions = np.concatenate([depot_pos.reshape(1,2), cs_pos], axis=0)  # (S+1, 2)
-        radius_cus = float(env['battery_capacity']) / float(env['consumption_per_distance']) / 2 # round trip radius
+        radius_cus = (float(env['battery_capacity']) / consumption_per_distance) / 2 # round trip radius
         max_iter = 100
         dist_threshold = 10.0  # min distance between cluster centers
 
-        num_customers_per_cluster_list = env['num_customers_per_cluster']
+        cluster_number = self.cluster_number_fun.build(env, rng=rng)
+        num_customers_per_cluster_list = self.num_customers_per_cluster.build(env, cluster_number, rng=rng, num_customers = num_customers)
         k = num_customers_per_cluster_list.shape[0]
+
         speed = float(env['speed'])              # km/h
         p_eff = effective_charging_power_kw(env) # kW
         
@@ -338,8 +353,8 @@ class MixedRCPositionPolicy:
 
     def __init__(self, env, random_policy = None, cluster_policy = None):
         self.rc_policies = RCPolicies.from_env(env)
-        self.random_policy = random_policy or RandomPositionPolicy()
-        self.cluster_policy = cluster_policy or ClusterPositionPolicy()
+        self.random_policy = random_policy or RandomPositionPolicy(env)
+        self.cluster_policy = cluster_policy or ClusterPositionPolicy(env)
         self.cluster_number_fun = ClusterNumberPolicies.from_env(env)  
         self.num_customers_per_cluster = ClusterAssignmentPolicies.from_env(env)
             
@@ -351,8 +366,8 @@ class MixedRCPositionPolicy:
                 time_depot_to_css,
                 service_time_policy, 
                 rng,
-                k,
-                num_customers = None):
+                num_customers = None,
+                energy_consumption_model_type = None):
 
             if num_customers == None:
                 num_customers = env['num_customers']
@@ -370,8 +385,8 @@ class MixedRCPositionPolicy:
                                                time_depot_to_css,
                                                service_time_policy, 
                                                rng,
-                                               k,
-                                               num_customers = num_random_customer)
+                                               num_customers = num_random_customer,
+                                               energy_consumption_model_type = energy_consumption_model_type)
 
             cluster_output = self.cluster_policy(env, 
                                                 depot_pos, 
@@ -380,8 +395,8 @@ class MixedRCPositionPolicy:
                                                 time_depot_to_css,
                                                 service_time_policy, 
                                                 rng,
-                                                k,
-                                                num_customers = num_cluster_customer) 
+                                                num_customers = num_cluster_customer,
+                                                energy_consumption_model_type = energy_consumption_model_type) 
 
 
             random_customers, random_service_time, random_t_earliest, random_t_latest = random_output

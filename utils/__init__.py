@@ -10,3 +10,5 @@ from .timing import (
 )
 
 from .feasibility import (cs_min_time_to_depot)
+
+from .energy_consumption_model import consumption_model
