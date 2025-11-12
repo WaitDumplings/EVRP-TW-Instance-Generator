@@ -4,10 +4,10 @@ area_size: [[0.0, 100.0], [0.0, 100.0]]     # km
 num_customers: 100
 num_charging_stations: 3
 num_cluster: 5
-instance_type_distribution: {R: 0.5, C: 0.3, RC: 0.2}
+instance_type_distribution: {R: 0.3, C: 0.3, RC: 0.4}
 dist_fun: "2-norm"
 set_edge: False
-test_instance_type: "RC"
+# test_instance_type: "RC"
 # test_timewindow_type: "Wide"
 
 
@@ -65,7 +65,7 @@ working_schedule_profiles:
       end: "20:00"
 
 # time window configs
-time_window_type_distribution: {Narrow: 0.0, Wide: 1.0}
+time_window_type_distribution: {Narrow: 0.6, Wide: 0.4}
 
 # Naive Method to generate time window width
 time_window_narrow_config: {alpha: 0.05, beta: 0.005}   # fractions of the total time horizon

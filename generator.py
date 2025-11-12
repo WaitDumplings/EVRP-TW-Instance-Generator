@@ -17,6 +17,7 @@ from .io.saving import save_instance_npz, save_instances_npz
 from .utils.geometry import clamp
 from .utils.feasibility import cs_min_time_to_depot, effective_charging_power_kw
 from .utils.visualization import plot_instance, save_instances
+from .utils.energy_consumption_model import consumption_model
 
 
 class InstanceGenerator:
@@ -140,27 +141,20 @@ class InstanceGenerator:
         depot_pos = self._get_depot_position(env)
         cs_pos, cs_time_to_depot, depot_time_to_cs = self._get_CSs_positions(env, depot_pos)
 
-        # get the cluster number
-        if env['test_instance_type'] == "C":
-            cluster_number_fun = ClusterNumberPolicies.from_env(env)
-            cluster_number = cluster_number_fun.build(env, rng=self.rng)
-            num_customers_per_cluster = ClusterAssignmentPolicies.from_env(env)
-            assignments = num_customers_per_cluster.build(env, cluster_number, rng=self.rng)
-        else:
-            cluster_number = None
-            assignments = None
-        env['cluster_number'] = cluster_number
-        env['num_customers_per_cluster'] = assignments
+        demand = demand_policy.build(env, num_customers=env['num_customers'], rng=self.rng)
+
+        # In case we may need for different policies.
+        env['demand'] = demand 
 
         cus_pos, service_time, t_earliest, t_latest = pos_policy.sample(
-            env, depot_pos, cs_pos, cs_time_to_depot, depot_time_to_cs, service_time_policy, rng=self.rng, k = cluster_number
+            env, depot_pos, cs_pos, cs_time_to_depot, depot_time_to_cs, service_time_policy, rng=self.rng
         )
 
         tw = tw_policy.build(
             env, t_earliest, t_latest, service_time, rng=self.rng
         )
-
-        demand = demand_policy.build(env, num_customers=len(cus_pos), rng=self.rng)
+        tw /= 60
+        
         customers = np.hstack([cus_pos, demand.reshape(-1, 1), tw, service_time.reshape(-1, 1)])
         return {"env": env, "depot": depot_pos, "customers": customers, "charging_stations": cs_pos}
 
@@ -190,10 +184,10 @@ class InstanceGenerator:
         (xmin, xmax), (ymin, ymax) = env["area_size"]
 
         # Max distance on a full charge (km): battery(kWh) / consumption(kWh/km)
-        radius_cs = float(env['battery_capacity']) / float(env['consumption_per_distance'])
+        consumption_per_distance = consumption_model(env, model_type = None)
+        radius_cs = float(env['battery_capacity']) / consumption_per_distance
         speed = float(env['speed'])  # km/h
         p_eff = effective_charging_power_kw(env)  # kW (kWh/h)
-        cpd=float(env['consumption_per_distance'])  # kWh/km,
 
         # Initial sampling box centered at the depot and clamped to area bounds
         cx, cy = float(depot_pos[0, 0]), float(depot_pos[0, 1])

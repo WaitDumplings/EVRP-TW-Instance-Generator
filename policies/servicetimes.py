@@ -32,13 +32,15 @@ class RandomServiceTimePolicy:
     """
     NAME = "Random"
 
-    def build(self, env: Dict, num_customers: int, rng: np.random.Generator, unit = "hour") -> np.ndarray:
+    def build(self, env: Dict, num_customers: int, rng: np.random.Generator, unit = "hours") -> np.ndarray:
         cfgs = env.get("servicetime_type_config", {})
         Find = False
-        if unit == "hour":
+        if unit == "hours":
             time_multiplier = 60.0  # convert hours to minutes
-        else:
+        elif unit == "minutes":
             time_multiplier = 1.0   # already in minutes
+        else:
+            raise ValueError(f"unit issue, cannot recognize unit {unit}!")
 
         for cfg in cfgs:
             if cfg['policy'] == self.NAME:
@@ -63,6 +65,7 @@ class RandomServiceTimePolicy:
         # float minutes
         st = rng.uniform(lo, hi, size=num_customers).astype(np.float32)
         nd = int(cfg.get("round_ndigits", 2))
+
         return np.round(st, nd).astype(np.float32) / time_multiplier
 
 
