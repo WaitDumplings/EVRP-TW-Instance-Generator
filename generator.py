@@ -11,6 +11,7 @@ from .policies.timewindows import TimeWindowPolicies
 from .policies.servicetimes import ServiceTimePolicies
 from .policies.demands import DemandPolicies
 from .policies.cluster_number import ClusterNumberPolicies
+from .policies.cluster_assignment import ClusterAssignmentPolicies
 
 from .io.saving import save_instance_npz, save_instances_npz
 from .utils.geometry import clamp
@@ -140,12 +141,16 @@ class InstanceGenerator:
         cs_pos, cs_time_to_depot, depot_time_to_cs = self._get_CSs_positions(env, depot_pos)
 
         # get the cluster number
-        breakpoint()
-        if env['test_instance_type'] != "R":
+        if env['test_instance_type'] == "C":
             cluster_number_fun = ClusterNumberPolicies.from_env(env)
             cluster_number = cluster_number_fun.build(env, rng=self.rng)
+            num_customers_per_cluster = ClusterAssignmentPolicies.from_env(env)
+            assignments = num_customers_per_cluster.build(env, cluster_number, rng=self.rng)
         else:
             cluster_number = None
+            assignments = None
+        env['cluster_number'] = cluster_number
+        env['num_customers_per_cluster'] = assignments
 
         cus_pos, service_time, t_earliest, t_latest = pos_policy.sample(
             env, depot_pos, cs_pos, cs_time_to_depot, depot_time_to_cs, service_time_policy, rng=self.rng, k = cluster_number
@@ -185,15 +190,15 @@ class InstanceGenerator:
         (xmin, xmax), (ymin, ymax) = env["area_size"]
 
         # Max distance on a full charge (km): battery(kWh) / consumption(kWh/km)
-        radius = float(env['battery_capacity']) / float(env['consumption_per_distance'])
+        radius_cs = float(env['battery_capacity']) / float(env['consumption_per_distance'])
         speed = float(env['speed'])  # km/h
         p_eff = effective_charging_power_kw(env)  # kW (kWh/h)
         cpd=float(env['consumption_per_distance'])  # kWh/km,
 
         # Initial sampling box centered at the depot and clamped to area bounds
         cx, cy = float(depot_pos[0, 0]), float(depot_pos[0, 1])
-        sxmin, sxmax = clamp(cx - radius, xmin, xmax), clamp(cx + radius, xmin, xmax)
-        symin, symax = clamp(cy - radius, ymin, ymax), clamp(cy + radius, ymin, ymax)
+        sxmin, sxmax = clamp(cx - radius_cs, xmin, xmax), clamp(cx + radius_cs, xmin, xmax)
+        symin, symax = clamp(cy - radius_cs, ymin, ymax), clamp(cy + radius_cs, ymin, ymax)
 
         num_cs = int(env['num_charging_stations'])
         cs_positions: List[np.ndarray] = []
@@ -216,7 +221,7 @@ class InstanceGenerator:
                 cs_positions=cs_positions,       # list of (2,)
                 cs_time_to_depot=cs_time_to_depot,
                 depot_time_to_cs=depot_time_to_cs,
-                radius=radius,
+                radius=radius_cs,
                 speed=speed,
                 p_eff=p_eff,
                 use_cs_range=False
@@ -231,10 +236,10 @@ class InstanceGenerator:
 
                 # Optionally re-center local sampling window around the last accepted CS
                 x0, y0 = cand
-                sxmin = clamp(x0 - radius, xmin, xmax)
-                sxmax = clamp(x0 + radius, xmin, xmax)
-                symin = clamp(y0 - radius, ymin, ymax)
-                symax = clamp(y0 + radius, ymin, ymax)
+                sxmin = clamp(x0 - radius_cs, xmin, xmax)
+                sxmax = clamp(x0 + radius_cs, xmin, xmax)
+                symin = clamp(y0 - radius_cs, ymin, ymax)
+                symax = clamp(y0 + radius_cs, ymin, ymax)
 
         return (
                 np.asarray(cs_positions, dtype=float),
