@@ -2,9 +2,9 @@
 # Geometric and Quantity Parameters
 area_size: [[0.0, 100.0], [0.0, 100.0]]     # km
 num_customers: 100
-num_charging_stations: 3
+num_charging_stations: 20
 num_cluster: 5
-instance_type_distribution: {R: 0.3, C: 0.3, RC: 0.4}
+instance_type_distribution: {R: 1.0, C: 0.0, RC: 0.0}
 dist_fun: "2-norm"
 set_edge: False
 # test_instance_type: "RC"
@@ -42,6 +42,14 @@ vehicles_profiles:
     loading_capacity: 0.65                  # tons (Capacity)
     notes: "Slate Auto low-cost EV pickup truck (under $20k after incentives)."
 
+  - name: "Test"                    # For Test
+    type: "for test"
+    speed: 40.0                            # km/h
+    battery_capacity: 30                  # kWh
+    consumption_per_distance: 0.5           # kWh/km
+    loading_capacity: 1.2                  # tons (Capacity)
+    notes: "Slate Auto low-cost EV pickup truck (under $20k after incentives)."
+
 # Charging Station
 charging_profiles:
   - name: "AC_L2_11kW"
@@ -65,7 +73,7 @@ working_schedule_profiles:
       end: "20:00"
 
 # time window configs
-time_window_type_distribution: {Narrow: 0.6, Wide: 0.4}
+time_window_type_distribution: {Narrow: 0.5, Wide: 0.45}
 
 # Naive Method to generate time window width
 time_window_narrow_config: {alpha: 0.05, beta: 0.005}   # fractions of the total time horizon

@@ -88,7 +88,7 @@ def cs_min_time_to_depot(
 
     # Sequential connectivity: candidate must be within radius of the existing network
     if d_min > radius + eps:
-        return CandidateCSTimes(False, math.inf, math.inf, -1)  # unreachable → discard this candidate
+        return CandidateCSTimes(False, math.inf, math.inf)  # unreachable → discard this candidate
 
     # Optional band constraint (anti-clustering and outward control)
     if use_cs_range:

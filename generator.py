@@ -19,6 +19,20 @@ from .utils.feasibility import cs_min_time_to_depot, effective_charging_power_kw
 from .utils.visualization import plot_instance, save_instances
 from .utils.energy_consumption_model import consumption_model
 
+# from configs.load_config import Config
+# from policies.positions import CustomerPositionPolicies
+# from policies.timewindows import TimeWindowPolicies
+# from policies.servicetimes import ServiceTimePolicies
+# from policies.demands import DemandPolicies
+# from policies.cluster_number import ClusterNumberPolicies
+# from policies.cluster_assignment import ClusterAssignmentPolicies
+
+# from io.saving import save_instance_npz, save_instances_npz
+# from utils.geometry import clamp
+# from utils.feasibility import cs_min_time_to_depot, effective_charging_power_kw
+# from utils.visualization import plot_instance, save_instances
+# from utils.energy_consumption_model import consumption_model
+
 
 class InstanceGenerator:
     def __init__(self, config_path: str, **kwargs):
@@ -63,7 +77,7 @@ class InstanceGenerator:
                 env[k] = v
 
         # Vehicles (assume homogeneous: index 0)
-        vprof = raw_env["vehicles_profiles"][0]
+        vprof = raw_env["vehicles_profiles"][-1]
         # Keep canonical names consistent downstream
         env["speed"] = float(vprof["speed"])  # km/h
         env["battery_capacity"] = float(vprof["battery_capacity"])  # kWh
@@ -186,6 +200,7 @@ class InstanceGenerator:
         # Max distance on a full charge (km): battery(kWh) / consumption(kWh/km)
         consumption_per_distance = consumption_model(env, model_type = None)
         radius_cs = float(env['battery_capacity']) / consumption_per_distance
+
         speed = float(env['speed'])  # km/h
         p_eff = effective_charging_power_kw(env)  # kW (kWh/h)
 
