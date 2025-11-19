@@ -6,6 +6,10 @@ class Config:
             data = yaml.safe_load(f)
         self.data = data
 
+        # intial cus_num, rs_num
+        # self.cus_num = self.data.get('num_customers', None)
+        # self.rs_num = self.data.get('num_charging_stations', None)
+
 
     def yaml_to_dict(self, data: dict) -> dict:
         config_dict = {}
@@ -29,7 +33,6 @@ def main():
     
     print("Loaded YAML config:\n")
     print(config_dict)
-    breakpoint()
 
 if __name__ == "__main__":
     main()

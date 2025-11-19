@@ -49,6 +49,10 @@ class InstanceGenerator:
         self.add_perturb: bool = bool(raw_env.get("add_perturb", False))
         self.env, self.perturb_dict = self._prepare_env(raw_env)
 
+        # initial cus / rs nodes
+        # self.cus_num = self.config.cus_num
+        # self.rs_num = self.config.rs_num
+
     def _prepare_env(self, raw_env: Dict) -> Tuple[Dict, Dict]:
         """
         Parse raw config into a flat env dict and extract a perturbation spec.
@@ -143,7 +147,13 @@ class InstanceGenerator:
                 plot_instance(instances, Instance_save_path)
         return instances
 
-    def _generate_one_instance(self, env: Dict) -> Dict:
+    def generate_tensors(self, env = None):
+        if env == None:
+            env = self.env
+        context = self._generate_one_instance(env, format = "tensor")
+        return context
+
+    def _generate_one_instance(self, env: Dict, format = "tensor") -> Dict:
         # Select policies from env
         pos_policy = CustomerPositionPolicies.from_env(env)
         tw_policy  = TimeWindowPolicies.from_env(env)
@@ -167,8 +177,20 @@ class InstanceGenerator:
         tw = tw_policy.build(
             env, t_earliest, t_latest, service_time, rng=self.rng
         )
-        tw /= 60
         
+        if format == "tensor":
+            customers_pos = cus_pos
+            demand = demand.reshape(-1, 1)
+            service_time = service_time.reshape(-1, 1)
+
+            return {"env": env, 
+                    "depot": depot_pos, 
+                    "customers": customers_pos, 
+                    "charging_stations": cs_pos, 
+                    "demands":demand, 
+                    "tw":tw,
+                    "service_time":service_time}
+            
         customers = np.hstack([cus_pos, demand.reshape(-1, 1), tw, service_time.reshape(-1, 1)])
         return {"env": env, "depot": depot_pos, "customers": customers, "charging_stations": cs_pos}
 

@@ -74,12 +74,6 @@ class NarrowTWPolicy:
         starts = np.maximum(starts, lb)
         ends   = np.minimum(ends, ub)
 
-        for i in range(N):
-            if ends[i] <= starts[i]:
-                breakpoint()
-        # breakpoint()
-        # print(ends - starts)
-        # print()
         tw = np.stack([np.round(starts, round_ndigits), np.round(ends, round_ndigits)], axis=1)
         return tw
 
@@ -139,13 +133,7 @@ class WideTWPolicy:
         # intersect with feasible [lb, ub]
         starts = np.maximum(starts, lb)
         ends   = np.minimum(ends, ub)
-        # breakpoint()
-        # print(ends - starts)
-        # print()
 
-        for i in range(N):
-            if ends[i] <= starts[i]:
-                breakpoint()
         tw = np.stack([np.round(starts, round_ndigits), np.round(ends, round_ndigits)], axis=1)
         return tw
 

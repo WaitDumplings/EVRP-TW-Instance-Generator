@@ -35,11 +35,21 @@ class EVRPTWVectorEnv(gym.Env):
         ######################################################
         
         # load dataset
-        self.dataset = InstanceGenerator(self.config_path)
+        save_path = kwargs.get("save_path", None)
+        num_instances = kwargs.get("num_instances", 1)
+        plot_instances = kwargs.get("plot_instances", False)
+        self.dataset = InstanceGenerator(self.config_path, 
+                                         save_path=save_path, 
+                                         num_instances=num_instances, 
+                                         plot_instances=plot_instances)
+        config_data = self.dataset.config.data
 
         # 
-        self.cus_nodes         = None
-        self.rs_nodes          = None
+        self.cus_nodes         = config_data.get('num_customers', None)
+        self.rs_nodes          = config_data.get('num_charging_stations', None)
+
+        if not self.cus_nodes or not self.rs_nodes:
+            raise ValueError("customer number of charging station number is not predefined!")
 
         # if eval_data==True, load from 'test' set, the '0'th data
         self.eval_data = False
@@ -86,10 +96,11 @@ class EVRPTWVectorEnv(gym.Env):
         return self.visited[:, (1 + self.rs_nodes):].all(axis=1)
 
     def _update_state(self, update_mask=True):
-        self._dist_matrix()
-        obs = {"cus_loc": self.nodes[self.rs_nodes + 1:]}  # n x 2 array
+
+        # arrangement: [depot, customers1, customer2, ... , cs1, cs2, ...]
+        obs = {"cus_loc": self.nodes[1:1 + self.cus_nodes, :]}  # n x 2 array
         obs["depot_loc"] = self.nodes[0]
-        obs["rs_loc"] = self.nodes[1:self.rs_nodes + 1]
+        obs["rs_loc"] = self.nodes[1 + self.cus_nodes:, :]
         obs["demand"] = self.demands
         obs["time_window"] = self.time_window
         
@@ -99,7 +110,8 @@ class EVRPTWVectorEnv(gym.Env):
         obs["current_load"] = self.load
         obs["current_battery"] = self.battery
         obs["current_time"] = self.current_time
-        obs["instance_mask"] = self.instance_mask
+        # obs["instance_mask"] = self.instance_mask
+
         return obs
 
     def _sync_state(self, index):
@@ -115,67 +127,7 @@ class EVRPTWVectorEnv(gym.Env):
         self.done = self.done[index]
 
     def _update_mask(self):
-        # visited_mask (Done) | one_step_ahead_mask | RS_mask (Done) | energy_mask (Done) | time_window_mask |
-        # Only allow to visit unvisited nodes
         action_mask = ~self.visited
-        # Depot & RS can always be visited but not visit itself
-        action_mask[:, :(self.rs_nodes + 1)] |= True
-        action_mask[range(self.n_traj), self.last] = False
-        action_mask[(self.prev == 0) & (self.last > 0) & (self.last < self.rs_nodes + 1), 1:self.rs_nodes + 1] = False
-
-        # 1️⃣ 获取所有 `self.last == 0` 的行索引 (valid_row0s)
-        valid_rows = np.where(self.last == 0)[0]  # 形状 (N,)
-
-        # 2️⃣ 获取 `self.restrictions` 中匹配 `valid_rows` 的行
-        mask_rows = np.isin(self.restrictions[:, 0], valid_rows)  # 形状 (M,), 选出符合的索引
-
-        # 3️⃣ 直接批量更新 action_mask
-        action_mask[self.restrictions[mask_rows, 0], self.restrictions[mask_rows, 1]] = False
-
-        # not allow visit nodes with higher demand than capacity
-        action_mask &= self.demands[None, :] <= (self.load[:, None] + 1e-10)  # to handle the floating point subtraction precision
-        
-        # not allow visit nodes with higher battery than capacity
-        action_mask &= self.battery_matrix[self.last,:] <= (self.battery.reshape(-1, 1) + 1e-10)
-
-        # time_window mask
-        action_mask[:, 1+self.rs_nodes:] &= ((self.current_time.reshape(-1, 1) + (self.dist_matrix[self.last, :] / self.velocity)) < self.time_window[:, 1].reshape(1, -1))[:, 1+self.rs_nodes:]
-
-        # one step ahead
-        action_mask &= (self.battery_matrix[self.last,:] + self.min_battery_value.reshape(1, -1)) <= (self.battery.reshape(-1, 1) + 1e-10)
-
-        # return depot when cannot serve any customers (prerequesiti: enough battery to the depot)
-        back_to_depot_when_compelte = ((self.battery_matrix[self.last, 0] < self.battery) & ((np.sum(self.visited[:, self.rs_nodes + 1:]==True,axis=-1) == self.cus_nodes)))    
-        action_mask[back_to_depot_when_compelte, 0]  = True
-        action_mask[back_to_depot_when_compelte, 1:] = False
-
-        # if visit a RS, cannot goto other RSs / Depot (iself.demands[None, :] <= (self.load[:, None] + 1e-10)f we still have chance to visit other customers)
-        if self.condition > 1:
-            action_mask[((~self.is_all_visited()) & (self.last < self.rs_nodes + 1) & (action_mask[:,0])), 1:self.rs_nodes + 1] = False
-            action_mask[((self.current_time > 1.0) & (self.last < self.rs_nodes + 1) & (action_mask[:,0])), 1:self.rs_nodes + 1] = False
-
-        # 计算 restriction mask
-        restric_mask = (self.prev == 0) & (self.last > 0) & (self.last < self.rs_nodes + 1) & (action_mask[:, 0]) & (np.sum(action_mask[:, 1:], axis=-1) == 0)
-
-        # 获取符合条件的索引 (行索引)
-        index = np.where(restric_mask)[0]  # 取出行索引
-
-        # 生成 [[row_index, self.last[row_index]]] 形式的 NumPy 数组
-        restricted_values = np.column_stack((index, self.last[index]))  # Shape: (N, 2)
-
-        # 只有在 restricted_values 不为空时才更新 self.restrictions
-        if restricted_values.size > 0:
-            self.restrictions = np.vstack((self.restrictions, restricted_values))
-
-        # if all customers have been visited, only stay at the depot 
-        action_mask[(self.last == 0) & (self.is_all_visited()), 1:] = False
-        action_mask[(self.last == 0) & (self.is_all_visited()), 0] = True
-        
-        rows_all_false = np.all(action_mask == False, axis=1).any()
-
-        if rows_all_false:
-            print("Abnormal: ", np.where(np.all(action_mask == False, axis=1)))
-            action_mask[np.where(np.all(action_mask == False, axis=1))[0], 0] = True
 
         self.mask = action_mask
         return action_mask
@@ -191,57 +143,88 @@ class EVRPTWVectorEnv(gym.Env):
         self.load = np.ones(self.n_traj, dtype=float)  # current load
         self.battery = np.ones(self.n_traj, dtype=float)  # current battery
         self.current_time = np.zeros(self.n_traj, dtype=float)  # current battery
-        self.serve_number = np.zeros(self.n_traj, dtype=int)
-        self.route_number = np.zeros(self.n_traj, dtype=int)
-        self.rs_travel_count = np.zeros((self.n_traj, self.rs_nodes, self.rs_nodes))
 
         if self.eval_data:
-            self._load_orders()         # eval dataset
+            # evaluation mode
+            self._eval_data_generate(env)
         else:
-            self._generate_solomon_data() # train dataset
+            # training mode
+            self._train_data_generate(env)
 
         self.state = self._update_state()
         self.info = {}
         self.done = np.array([False] * self.n_traj)
-
-        if env:
-            self._reset_env(env)
-
+        
         return self.state
 
-    def _reset_env(self, env):
-        raise NotImplementedError
+    def _train_data_generate(self, env = None):
+        if env:
+            self._update_env(env)
+        
+        context = self.dataset.generate_tensors()
+        self.depot_nodes = context["depot"].shape[0]
+        self.cus_nodes = context['customers'].shape[0]
+        self.rs_nodes = context['charging_stations'].shape[0]
 
-    def _generate_solomon_data(self):
-        data, data_env = self.dataset._generate_instances()
-        self.nodes = np.concatenate((data["depot_loc"], data['rs_loc'], data["cus_loc"]))
-        self.demands = data["demand"]
-        self.time_window = data["time_window"]
-        self.energy_consum_rate = data["energy_consumption"]
-        self.b_s = data["battery_capacity"]
-        self.parameter_setting(velocity_base = data["velocity_base"],
-                                rscc_base = data["energy_consumption"],
-                                rs_speed_base = data["charging_rate"],
-                                time_window_limit = data["max_time"],
-                                pos_scale = self.pos_scale,
-                                battery_scale = data["battery_capacity"],
-                                service_time_base = data["service_time"])
-        self.cus_nodes = data["cus_loc"].shape[0]
-        self.rs_nodes = data['rs_loc'].shape[0]
-        self.type = data['types']
-        self.instance_mask = data['instance_mask']
+        # Normalizations
+        self._normalizations(context)
 
-    def _load_orders(self):
-        data = EVRPTWDataset[self.eval_partition, self.cus_nodes, self.eval_data_idx]
-        self.nodes = np.concatenate((data["depot_loc"], data['rs_loc'], data["cus_loc"]))
-        self.demands = data["demand"]
-        self.time_window = data["time_window"]
-        self.energy_consum_rate = data["energy_consumption"]
-        self.b_s = data["battery_capacity"]
-        self.cus_nodes = data["cus_loc"].shape[0]
-        self.rs_nodes = data['rs_loc'].shape[0]
-        self.type = data['types']
-        self.instance_mask = data['instance_mask']
+    
+    def _normalizations(self, context):         
+        # Node Information
+        nodes = np.concatenate((context["depot"], context['customers'], context["charging_stations"])).astype(np.float32)
+        positions = np.zeros_like(nodes)
+
+        demands = context["demands"].astype(np.float32)
+        time_window = context["tw"].astype(np.float32)
+        service_time = context["service_time"].astype(np.float32)
+
+        # Graph Information
+        data = context['env']
+        energy_consum_rate = data["consumption_per_distance"]
+        b_s = data["battery_capacity"]
+        velocity = data["speed"]
+        loading_capacity = data['loading_capacity']
+        charging_power = data["charging_speed"] * data['charging_efficiency']
+        instance_max_time = data["instance_endTime"]
+        instance_working_start_time = data['working_startTime']
+        instance_working_end_time = data['working_endTime']
+        pos_scale = data["area_size"]
+
+        # Node Normalization:
+        # position rescale:
+        x_scale = pos_scale[0][1] - pos_scale[0][0]
+        y_scale = pos_scale[1][1] - pos_scale[1][0]
+        positions[:, 0] =  (nodes[:, 0] - pos_scale[0][0]) / x_scale
+        positions[:, 1] = (nodes[:, 1] - pos_scale[1][0]) / y_scale
+
+        # demand rescale
+        demands_norm = demands / loading_capacity
+
+        # time rescale
+        working_time_span = instance_working_end_time - instance_working_start_time
+        time_window_norm = np.clip((time_window - instance_working_start_time) / working_time_span, 0.0, 1.0)
+        service_time_norm = np.clip(service_time / working_time_span, 0.0, 1.0)
+
+        # energy
+        energy_consum_rate = energy_consum_rate / b_s
+        charging_power = charging_power / b_s
+
+        # update
+        self.nodes_raw = nodes
+        self.nodes = positions
+        self.demands = demands_norm
+        self.time_window = time_window_norm
+        self.service_time = service_time_norm
+        self.energy_consum_rate = energy_consum_rate
+        self.charging_power = charging_power
+        self.velocity = velocity
+        self.instance_max_time = instance_max_time
+        self.loading_capacity = loading_capacity
+        self.battery_capacity = b_s
+
+    def _eval_data_generate(self, env = None):
+        raise NotImplementedError("Not Implement Yet!")
     
     def _go_to(self, destination):
         # destination : 0 ~ N (N = 1(depot) + m(rs nodes) + n(customer nodes))
