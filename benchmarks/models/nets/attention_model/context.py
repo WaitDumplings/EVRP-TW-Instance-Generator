@@ -11,12 +11,7 @@ def AutoContext(problem_name, config):
     Automatically select the corresponding module according to ``problem_name``
     """
     mapping = {
-        "tsp": TSPContext,
-        "cvrp": VRPContext,
-        "sdvrp": VRPContext,
         "evrptw": VRPContext,
-        "pctsp": PCTSPContext,
-        "op": OPContext,
     }
     embeddingClass = mapping[problem_name]
     embedding = embeddingClass(**config)
@@ -85,81 +80,6 @@ class PrevNodeContext(nn.Module):
         context_embedding = torch.cat((prev_node_embedding, state_embedding), -1)
         return context_embedding
 
-
-class TSPContext(PrevNodeContext):
-    """
-    Context node embedding for traveling salesman problem.
-    Return a concatenation of
-
-    +------------------------+---------------------------+
-    | first node's embedding | previous node's embedding |
-    +------------------------+---------------------------+
-
-    .. note::
-        Subclass of :class:`.PrevNodeContext`. The argument, inputs, outputs follow the same specification.
-
-        In addition to supplying  ``state.get_current_node()`` for the index of the previous visited node.
-        The input ``state`` needs to supply ``state.first_a`` for the index of the first visited node.
-
-    .. warning::
-        The official implementation concatenates the context with [first node, prev node].
-        However, if we follow the paper closely, it should instead be [prev node, first node].
-        Please check ``forward_code`` and ``forward_paper`` for the different implementations.
-        We follow the official implementation in this class.
-    """
-
-    def __init__(self, context_dim):
-        super(TSPContext, self).__init__(context_dim)
-        self.W_placeholder = nn.Parameter(torch.Tensor(self.context_dim).uniform_(-1, 1))
-
-    def _state_embedding(self, embeddings, state):
-        first_node = state.first_a
-        state_embedding = _gather_by_index(embeddings, first_node)
-        return state_embedding
-
-    def forward_paper(self, embeddings, state):
-        batch_size = embeddings.size(0)
-        if state.i.item() == 0:
-            context_embedding = self.W_placeholder[None, None, :].expand(
-                batch_size, 1, self.W_placeholder.size(-1)
-            )
-        else:
-            context_embedding = super().forward(embeddings, state)
-        return context_embedding
-
-    def forward_code(self, embeddings, state):
-        batch_size = embeddings.size(0)
-        if state.i.item() == 0:
-            context_embedding = self.W_placeholder[None, None, :].expand(
-                batch_size, 1, self.W_placeholder.size(-1)
-            )
-        else:
-            context_embedding = _gather_by_index(
-                embeddings, torch.cat([state.first_a, state.get_current_node()], -1)
-            ).view(batch_size, 1, -1)
-        return context_embedding
-
-    def forward_vectorized(self, embeddings, state):
-        n_queries = state.states["first_node_idx"].shape[-1]
-        batch_size = embeddings.size(0)
-        out_shape = (batch_size, n_queries, self.context_dim)
-
-        switch = state.is_initial_action  # tensor, 1 if is initial action
-        switch = switch[:, None, None].expand(out_shape)  # mask for each data
-
-        # only used for the first action
-        placeholder_embedding = self.W_placeholder[None, None, :].expand(out_shape)
-        # used after first action
-        indexes = torch.stack([state.first_a, state.get_current_node()], -1).flatten(-2)
-        normal_embedding = _gather_by_index(embeddings, indexes).view(out_shape)
-
-        context_embedding = switch * placeholder_embedding + (~switch) * normal_embedding
-        return context_embedding
-
-    def forward(self, embeddings, state):
-        return self.forward_vectorized(embeddings, state)
-
-
 class VRPContext(PrevNodeContext):
     """
     Context node embedding for capacitated vehicle routing problem.
@@ -181,55 +101,9 @@ class VRPContext(PrevNodeContext):
         super(VRPContext, self).__init__(context_dim)
 
     def _state_embedding(self, embeddings, state):
-        state_embedding_capacity = state.VEHICLE_CAPACITY - state.used_capacity[:, :, None]
-        state_embedding_battery  = state.VEHICLE_BATTERY - state.used_battery[:, :, None]
-        state_embedding_time = state.current_time[:, :, None]
+        state_embedding_capacity = (state.used_capacity / state.VEHICLE_CAPACITY).unsqueeze(-1)
+        state_embedding_battery  = (state.used_battery / state.VEHICLE_BATTERY).unsqueeze(-1)
+        state_embedding_time = state.current_time.unsqueeze(-1)
         return torch.cat((state_embedding_capacity, state_embedding_battery, state_embedding_time), dim=-1)
 
 
-class PCTSPContext(PrevNodeContext):
-    """
-    Context node embedding for prize collecting traveling salesman problem.
-    Return a concatenation of
-
-    +---------------------------+----------------------------+
-    | previous node's embedding | remaining prize to collect |
-    +---------------------------+----------------------------+
-
-    .. note::
-        Subclass of :class:`.PrevNodeContext`. The argument, inputs, outputs follow the same specification.
-
-        In addition to supplying  ``state.get_current_node()`` for the index of the previous visited node.
-        The input ``state`` needs to supply ``state.get_remaining_prize_to_collect()``.
-    """
-
-    def __init__(self, context_dim):
-        super(PCTSPContext, self).__init__(context_dim)
-
-    def _state_embedding(self, embeddings, state):
-        state_embedding = state.get_remaining_prize_to_collect()[:, :, None]
-        return state_embedding
-
-
-class OPContext(PrevNodeContext):
-    """
-    Context node embedding for orienteering problem.
-    Return a concatenation of
-
-    +---------------------------+---------------------------------+
-    | previous node's embedding | remaining tour length to travel |
-    +---------------------------+---------------------------------+
-
-    .. note::
-        Subclass of :class:`.PrevNodeContext`. The argument, inputs, outputs follow the same specification.
-
-        In addition to supplying  ``state.get_current_node()`` for the index of the previous visited node.
-        The input ``state`` needs to supply ``state.get_remaining_length()``.
-    """
-
-    def __init__(self, context_dim):
-        super(OPContext, self).__init__(context_dim)
-
-    def _state_embedding(self, embeddings, state):
-        state_embedding = state.get_remaining_length()[:, :, None]
-        return state_embedding

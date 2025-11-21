@@ -4,6 +4,8 @@ from gym import spaces
 import re
 import torch
 import os
+import json
+from pathlib import Path
 
 from evrptw_gen.generator import InstanceGenerator
 
@@ -14,13 +16,14 @@ def assign_env_config(self, kwargs):
     for key, value in kwargs.items():
         setattr(self, key, value)
 
+def gen_dist_matrix(nodes1, nodes2):
+    # nodes1: (N1, d)
+    # nodes2: (N2, d)
+    diff = nodes1[:, None, :] - nodes2[None, :, :]
+    return np.linalg.norm(diff, axis=-1)
 
-def dist(loc1, loc2):
+def fun_dist(loc1, loc2):
     return ((loc1[:, 0] - loc2[:, 0]) ** 2 + (loc1[:, 1] - loc2[:, 1]) ** 2) ** 0.5
-
-import json
-from pathlib import Path
-import gym
 
 class EVRPTWVectorEnv(gym.Env):
     def __init__(self, *args, **kwargs):  
@@ -45,35 +48,37 @@ class EVRPTWVectorEnv(gym.Env):
         config_data = self.dataset.config.data
 
         # 
-        self.cus_nodes         = config_data.get('num_customers', None)
-        self.rs_nodes          = config_data.get('num_charging_stations', None)
+        self.cus_num         = config_data.get('num_customers', None)
+        self.rs_num          = config_data.get('num_charging_stations', None)
 
-        if not self.cus_nodes or not self.rs_nodes:
+        if not self.cus_num or not self.rs_num:
             raise ValueError("customer number of charging station number is not predefined!")
 
-        # if eval_data==True, load from 'test' set, the '0'th data
-        self.eval_data = False
-        self.eval_partition = "test"
-        self.eval_data_idx = 0
+        self.env_mode = "train"
 
         assign_env_config(self, kwargs)
 
-        obs_dict = {"cus_loc": spaces.Box(low=0, high=1, shape=(self.cus_nodes, 2))}
-        obs_dict["depot_loc"] = spaces.Box(low=0, high=1, shape=(2,))
-        obs_dict["rs_loc"] = spaces.Box(low = 0, high=1, shape=(self.rs_nodes, 2))
-        obs_dict["demand"] = spaces.Box(low=0, high=1, shape=(self.cus_nodes + 1 + self.rs_nodes,))
-        obs_dict["time_window"] = spaces.Box(low = 0, high=1, shape=(self.cus_nodes + 1 + self.rs_nodes, 2))
+        obs_dict = {"cus_loc": spaces.Box(low=0, high=1, shape=(self.cus_num, 2))}
+        obs_dict["depot_loc"] = spaces.Box(low=0, high=1, shape=(1,2))
+        obs_dict["rs_loc"] = spaces.Box(low = 0, high=1, shape=(self.rs_num, 2))
+        obs_dict["demand"] = spaces.Box(low=0, high=1, shape=(1 + self.cus_num + self.rs_num,))
+        obs_dict["time_window"] = spaces.Box(low = 0, high=1, shape=(1 + self.cus_num + self.rs_num, 2))
         obs_dict["action_mask"] = spaces.MultiBinary(
-            [self.n_traj, self.cus_nodes + self.rs_nodes + 1]
+            [self.n_traj, self.cus_num + self.rs_num + 1]
         )  # 1: OK, 0: cannot go
-        obs_dict["last_node_idx"] = spaces.MultiDiscrete([self.cus_nodes + 1] * self.n_traj)
+        obs_dict["last_node_idx"] = spaces.MultiDiscrete([self.cus_num + self.rs_num + 1] * self.n_traj)
         obs_dict["current_load"] = spaces.Box(low=0, high=1, shape=(self.n_traj,))
         obs_dict["current_battery"] = spaces.Box(low=0, high=1, shape=(self.n_traj,))
         obs_dict["current_time"] = spaces.Box(low=0, high=1, shape=(self.n_traj,))
-        obs_dict["instance_mask"] = spaces.Box(low=0, high=1, shape=(self.cus_nodes + self.rs_nodes + 1,), dtype=bool)
+        obs_dict["service_time"] = spaces.Box(low=0, high=1, shape=(1 + self.cus_num + self.rs_num,))
+        obs_dict["battery_capacity"] = spaces.Box(low=0, high=np.inf, shape=(1,))
+        obs_dict["loading_capacity"] = spaces.Box(low=0, high=np.inf, shape=(1,))
+
+        # obs_dict["instance_mask"] = spaces.Box(low=0, high=1, shape=(self.cus_num + self.rs_num + 1,), dtype=bool)
+        # obs_dict["test"] = spaces.Box(low=0, high=1, shape=(self.cus_num + self.rs_num + 1,), dtype=bool)
 
         self.observation_space = spaces.Dict(obs_dict)
-        self.action_space = spaces.MultiDiscrete([self.rs_nodes + self.cus_nodes + 1] * self.n_traj)
+        self.action_space = spaces.MultiDiscrete([self.rs_num + self.cus_num + 1] * self.n_traj)
         self.reward_space = None
 
         self.reset()
@@ -92,15 +97,16 @@ class EVRPTWVectorEnv(gym.Env):
         return self.state, self.reward, self.done, self.info
 
     def is_all_visited(self):
-        # assumes no repetition in the first `cus_nodes` steps
-        return self.visited[:, (1 + self.rs_nodes):].all(axis=1)
+        # assumes no repetition in the first `cus_num` steps
+        return self.visited[:, (1 + self.rs_num):].all(axis=1)
 
     def _update_state(self, update_mask=True):
 
         # arrangement: [depot, customers1, customer2, ... , cs1, cs2, ...]
-        obs = {"cus_loc": self.nodes[1:1 + self.cus_nodes, :]}  # n x 2 array
-        obs["depot_loc"] = self.nodes[0]
-        obs["rs_loc"] = self.nodes[1 + self.cus_nodes:, :]
+        obs = {}
+        obs["cus_loc"] = self.cus_nodes  # n x 2 array
+        obs["depot_loc"] = self.depot_nodes
+        obs["rs_loc"] = self.rs_nodes
         obs["demand"] = self.demands
         obs["time_window"] = self.time_window
         
@@ -110,7 +116,10 @@ class EVRPTWVectorEnv(gym.Env):
         obs["current_load"] = self.load
         obs["current_battery"] = self.battery
         obs["current_time"] = self.current_time
-        # obs["instance_mask"] = self.instance_mask
+        obs["service_time"] = self.service_time
+        obs["battery_capacity"] = np.array(self.battery_capacity).reshape(-1)
+        obs["loading_capacity"] = np.array(self.loading_capacity).reshape(-1)
+        # obs["instance_mask"] = None
 
         return obs
 
@@ -127,29 +136,32 @@ class EVRPTWVectorEnv(gym.Env):
         self.done = self.done[index]
 
     def _update_mask(self):
+        # Need to update
         action_mask = ~self.visited
 
         self.mask = action_mask
         return action_mask
 
     def _RESET(self, env = None):
-        self.visited = np.zeros((self.n_traj, self.cus_nodes + self.rs_nodes + 1), dtype=bool)
+        self.visited = np.zeros((self.n_traj, self.cus_num + self.rs_num + 1), dtype=bool)
         self.visited[:, 0] = True
         self.num_steps = 0
         self.traj = []
         self.restrictions = np.empty((0, 2), dtype=int)
         self.last = np.zeros(self.n_traj, dtype=int)  # idx of the cur elem
         self.prev = np.zeros(self.n_traj, dtype=int)  # idx of the prev elem
-        self.load = np.ones(self.n_traj, dtype=float)  # current load
-        self.battery = np.ones(self.n_traj, dtype=float)  # current battery
+        self.load = np.zeros(self.n_traj, dtype=float)  # current load
+        self.battery = np.zeros(self.n_traj, dtype=float)  # current battery
         self.current_time = np.zeros(self.n_traj, dtype=float)  # current battery
 
-        if self.eval_data:
+        if self.env_mode == "eval":
             # evaluation mode
             self._eval_data_generate(env)
-        else:
+        elif self.env_mode == "train":
             # training mode
             self._train_data_generate(env)
+        else:
+            raise ValueError("Unknown mode : {}".format(self.env_mode))
 
         self.state = self._update_state()
         self.info = {}
@@ -162,9 +174,9 @@ class EVRPTWVectorEnv(gym.Env):
             self._update_env(env)
         
         context = self.dataset.generate_tensors()
-        self.depot_nodes = context["depot"].shape[0]
-        self.cus_nodes = context['customers'].shape[0]
-        self.rs_nodes = context['charging_stations'].shape[0]
+        self.depot_num = context["depot"].shape[0]
+        self.cus_num = context['customers'].shape[0]
+        self.rs_num = context['charging_stations'].shape[0]
 
         # Normalizations
         self._normalizations(context)
@@ -199,12 +211,19 @@ class EVRPTWVectorEnv(gym.Env):
         positions[:, 1] = (nodes[:, 1] - pos_scale[1][0]) / y_scale
 
         # demand rescale
-        demands_norm = demands / loading_capacity
+        demands_norm_cus = demands / loading_capacity
+        demands_norm_depot = np.zeros((1,))
+        demands_norm_rs = np.zeros((self.rs_num,))
 
         # time rescale
         working_time_span = instance_working_end_time - instance_working_start_time
-        time_window_norm = np.clip((time_window - instance_working_start_time) / working_time_span, 0.0, 1.0)
-        service_time_norm = np.clip(service_time / working_time_span, 0.0, 1.0)
+        time_window_norm_cus = np.clip((time_window - instance_working_start_time) / working_time_span, 0.0, 1.0)
+        time_window_norm_depot = np.array([[0,1]])
+        time_window_norm_rs = np.array([[0,1] * self.rs_num]).reshape(self.rs_num, 2)
+
+        service_time_norm_cus = np.clip(service_time / working_time_span, 0.0, 1.0)
+        service_time_norm_depot = np.zeros((1,))
+        service_time_norm_rs = np.zeros((self.rs_num,))
 
         # energy
         energy_consum_rate = energy_consum_rate / b_s
@@ -213,9 +232,13 @@ class EVRPTWVectorEnv(gym.Env):
         # update
         self.nodes_raw = nodes
         self.nodes = positions
-        self.demands = demands_norm
-        self.time_window = time_window_norm
-        self.service_time = service_time_norm
+        self.depot_nodes = positions[0:1]
+        self.cus_nodes = positions[1 : 1 + self.cus_num]
+        self.rs_nodes = positions[1 + self.cus_num : 1 + self.cus_num + self.rs_num]
+       
+        self.demands = np.concatenate((demands_norm_depot, demands_norm_cus, demands_norm_rs))
+        self.time_window = np.concatenate((time_window_norm_depot, time_window_norm_cus, time_window_norm_rs))
+        self.service_time = np.concatenate((service_time_norm_depot, service_time_norm_cus, service_time_norm_rs))
         self.energy_consum_rate = energy_consum_rate
         self.charging_power = charging_power
         self.velocity = velocity
@@ -223,126 +246,66 @@ class EVRPTWVectorEnv(gym.Env):
         self.loading_capacity = loading_capacity
         self.battery_capacity = b_s
 
+        self.dist_matrix = gen_dist_matrix(self.nodes, self.nodes)
+        self.battery_matrix = self.dist_matrix  / self.energy_consum_rate
+
     def _eval_data_generate(self, env = None):
         raise NotImplementedError("Not Implement Yet!")
     
     def _go_to(self, destination):
-        # destination : 0 ~ N (N = 1(depot) + m(rs nodes) + n(customer nodes))
-        # self.traj.append(destination)
+
         dest_node = self.nodes[destination]
-
-        self.serve_number[destination >= self.rs_nodes + 1] += 1
-        self.route_number[(self.prev==0) & (destination>0)] += 1
-
-        dist = self.cost(dest_node, self.nodes[self.last]) 
+        dist = fun_dist(dest_node, self.nodes[self.last]) 
         self.prev = self.last.copy()
         self.last = destination.copy()
+        cus_start_idx = 1
+        rs_start_idx = 1 + self.cus_num
 
-        if self.eval_partition == "eval":
-            # wait time + service time
-            # self.obj_reward[obj_go_to_Customer] -= np.max((self.dist_matrix[self.prev, destination] / self.velocity, self.time_window[destination][:,0]), axis=0)[obj_go_to_Customer] + self.service_time
-            # self.obj_reward[obj_go_to_Depot] -= (self.dist_matrix[self.prev, destination] / self.velocity)[obj_go_to_Depot]
-            # self.obj_reward[obj_go_to_RS] -= ((self.dist_matrix[self.prev, destination] / self.velocity) + (1 - (self.battery - self.battery_matrix[self.prev, destination]) / self.rs_speed))[obj_go_to_RS]
-            # self.obj_reward*= self.dist_fee
-            # self.reward = self.obj_reward
-            self.reward = dist
+        go_to_depot = (destination == 0)
+        go_to_rs = (destination >= rs_start_idx)
+        go_to_cus = (cus_start_idx <= destination) & (destination < rs_start_idx)
+
+        ################################ Reward Update ################################
+        if self.env_mode == "eval":
+            self.reward = -dist
+        elif self.env_mode == "train":
+            self.reward = -dist
         else:
-            # === RS travel count update ===
-            penalty = np.zeros_like(self.prev, dtype=np.float32)  # shape: (200,)
-            if self.condition  == 3:
-                mask = (self.prev >= 1) & (self.prev <= self.rs_nodes) & \
-                    (self.last >= 1) & (self.last <= self.rs_nodes)
-                penalty = np.zeros_like(self.prev, dtype=np.float32)  # shape: (200,)
-                penalty[mask] = -100
-            elif self.condition == 2:
-                valid_idx = (self.prev > 0) & (self.prev <= self.rs_nodes) & (self.last > 0) & (self.last <= self.rs_nodes)
-                if (valid_idx.any()):
-                    prev_idx = self.prev[valid_idx] - 1
-                    last_idx = self.last[valid_idx] - 1
-                    self.rs_travel_count[valid_idx, prev_idx, last_idx] += 1
-                    mask = self.rs_travel_count[valid_idx,prev_idx, last_idx] > 1
-                    penalty[valid_idx][mask] -= 100
+            raise ValueError("Unknown Mode : {}".format(self.eval_partition))
 
-            # Update Reward:
-            new_route = (self.prev == 0) & (destination > 0)
-            go_to_Depot = (self.prev > 0) & (destination == 0)
-            go_to_RS = (destination < self.rs_nodes + 1) & (destination > 0)
-            go_to_RS_low_SoC = (self.battery < 0.3) & (self.prev >= self.rs_nodes + 1) & (destination > 0)
-            go_to_RS_low_SoC_large_capacity = go_to_RS_low_SoC & (self.load > 0.3)
-            go_to_Depot_with_non_serve = go_to_Depot & (self.serve_number == 0)
-            go_to_Depot_with_one_serve = go_to_Depot & (self.serve_number == 1)
-            go_to_Depot_with_serve = go_to_Depot & (self.serve_number > 2)
-            go_to_Customer = (self.prev >= self.rs_nodes + 1) & (destination >= self.rs_nodes + 1)
+        ################################ Load Update ################################
+        self.load[destination == 0] = 0
+        self.load[destination > 0] += self.demands[destination[destination > 0]]
 
-            obj_go_to_Customer = (destination > self.rs_nodes)
-            obj_go_to_RS = (destination < self.rs_nodes + 1) & (destination > 0)
-            obj_go_to_Depot = (destination == 0)
-
-            # self.obj_reward = dist * 0
-            new_route_penalty = np.sum(2 * self.dist_matrix[0, self.rs_nodes+1:])
-
-            # obj_reward
-            # self.obj_reward[obj_go_to_Customer] -= np.max((self.dist_matrix[self.prev, destination] / self.velocity, self.time_window[destination][:,0]), axis=0)[obj_go_to_Customer] + self.service_time
-            # self.obj_reward[obj_go_to_Depot] -= (self.dist_matrix[self.prev, destination] / self.velocity)[obj_go_to_Depot]
-            # self.obj_reward[obj_go_to_RS] -= ((self.dist_matrix[self.prev, destination] / self.velocity) + (1 - (self.battery - self.battery_matrix[self.prev, destination]) / self.rs_speed))[obj_go_to_RS]
-            # self.obj_reward *= self.dist_fee
-            self.obj_reward = -dist*self.dist_fee
-
-            # # serve reward
-            self.serve_reward = np.zeros_like(self.obj_reward)
-            # self.serve_reward[go_to_Depot_with_one_serve] -= 0.2
-            if self.condition == 3:
-                self.serve_reward[go_to_Depot_with_non_serve] -= 1.0
-                self.serve_reward[go_to_Depot_with_serve] += self.serve_number[go_to_Depot_with_serve] * 0.1
-            elif self.condition == 2:
-                self.serve_reward[go_to_Depot_with_non_serve] -= 1.0
-                self.serve_reward[go_to_Depot_with_serve] += self.serve_number[go_to_Depot_with_serve] * 0.01
-            
-            # # rs_cus_reward
-            self.rs_reward = np.zeros_like(self.obj_reward)
-            if self.condition == 2:
-                self.rs_reward[go_to_RS] += 0.01
-                self.rs_reward[go_to_RS_low_SoC] += 0.03
-                self.rs_reward[go_to_RS_low_SoC_large_capacity] += 0.02
-
-            self.go_to_cus_reward = np.zeros_like(self.obj_reward)
-            # self.go_to_cus_reward[go_to_Customer] += 0.01
-
-            self.reward = self.obj_reward + self.serve_reward + self.rs_reward + self.go_to_cus_reward + penalty
-
-            # self.reward[new_route] -= (self.route_number[new_route] - 1) * 0.02
-
-        self.serve_number[destination == 0] = 0
-
-        # load update
-        self.load[destination == 0] = 1
-        self.load[destination > 0] -= self.demands[destination[destination > 0]]
-
+        ################################ Time Update ################################
         self.current_time[destination == 0] = 0
+
         # arrive and serve time
         # Start from node i -> node j (travel: serve for node i, travel from i -> j)
         # arrive time (current_time = service time + travel time)
         self.current_time[destination > 0] += (self.dist_matrix[self.prev, destination] / self.velocity)[destination > 0]
 
         # arrive time >= time_window start time
-        self.current_time[destination >= self.rs_nodes + 1] = np.max((self.current_time[destination >= self.rs_nodes + 1], self.time_window[destination[destination >= self.rs_nodes + 1], 0]), axis=0)
+        self.current_time[go_to_cus] = np.max((self.current_time[go_to_cus], self.time_window[destination[go_to_cus], 0]), axis=0)
         
         # end_service_time
-        self.current_time[destination >= self.rs_nodes + 1] += self.service_time
+        self.current_time += self.service_time[destination]
 
-        # charging time at RS
-        go_to_rs = (destination < self.rs_nodes + 1) & (destination > 0)
-        self.current_time[go_to_rs] += (1 - (self.battery[go_to_rs] - self.battery_matrix[self.prev, destination][go_to_rs])) / self.rs_speed
+        # charging time at RS (Need TO Update)
+        self.current_time[go_to_rs] += (self.battery + self.battery_matrix[self.prev, destination])[go_to_rs] / self.charging_power
 
+        ################################ Demand Update ################################
         # self.demands_with_depot[destination[destination > 0] - 1] = 0
+        self.load += self.demands[destination]
         self.visited[np.arange(self.n_traj), destination] = True
         
-        # self.battery update
-        less_than = destination < (self.rs_nodes + 1)
+        ################################ Battery Update ################################
+        # less_than = destination < (self.rs_num + 1)
         # self.battery[less_than] -= self.battery_matrix[self.prev, destination][less_than]
 
-        self.battery[destination < (self.rs_nodes + 1)] = 1
-        self.battery[destination >= (self.rs_nodes + 1)] -= self.battery_matrix[self.prev, destination][destination >= (self.rs_nodes + 1)]
+        self.battery[go_to_depot] = 0
+        self.battery[go_to_rs] = 0
+        self.battery[go_to_cus] += (self.dist_matrix[self.prev, destination] / self.energy_consum_rate)[go_to_cus]
 
     def step(self, action):
         # return last state after done,

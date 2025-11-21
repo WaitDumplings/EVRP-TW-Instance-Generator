@@ -61,6 +61,7 @@ class lazyClass:
                 f"Data sepecified by ({partition}, {nodes}) was not initialized. Attepmting to load it for the first time."
             )
             data = load(file_catalog[partition][nodes])
+            breakpoint()
             self.data[partition][nodes] = [make_solomon_instance(instance) for instance in data]
         if idx >= len(self.data[partition][nodes]):
             idx = random.randint(0, len(self.data[partition][nodes]))

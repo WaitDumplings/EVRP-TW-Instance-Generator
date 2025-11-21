@@ -180,8 +180,8 @@ class InstanceGenerator:
         
         if format == "tensor":
             customers_pos = cus_pos
-            demand = demand.reshape(-1, 1)
-            service_time = service_time.reshape(-1, 1)
+            demand = demand
+            service_time = service_time
 
             return {"env": env, 
                     "depot": depot_pos, 

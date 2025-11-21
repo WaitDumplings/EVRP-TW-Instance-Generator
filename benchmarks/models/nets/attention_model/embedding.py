@@ -14,7 +14,7 @@ def AutoEmbedding(problem_name, config):
     return embedding
 
 # Embedding Layer
-class EVRPTWEmbedding(nn.Module):
+class EVRPTWEmbedding_Legacy(nn.Module):
     """
     Embedding for the capacitated vehicle routing problem.
     The shape of tensors in ``input`` is summarized as following:
@@ -62,6 +62,88 @@ class EVRPTWEmbedding(nn.Module):
         depot_node = self.depot_embedding(x['depot_loc'].unsqueeze(1))
 
         return torch.cat((depot_node, rs_nodes, cus_nodes), dim=-2)
+
+class EVRPTWEmbedding(nn.Module):
+    """
+    统一对 depot / RS / customer 做 embedding，
+    静态特征：x, y, demand, tw_start, tw_end, service_time
+    再加一个 node_type embedding 区分三种节点。
+    """
+
+    def __init__(self, embedding_dim = 128):
+        super().__init__()
+        self.embed_dim = embedding_dim
+
+        # 2(x,y) + 1(demand) + 2(tw_start, tw_end) + 1(service_time) = 6
+        self.static_proj = nn.Linear(6, embedding_dim)
+
+        # 0: depot, 1: RS, 2: customer
+        self.type_embed = nn.Embedding(3, embedding_dim)
+
+    def forward(self, x):
+        """
+        期望输入：
+        x['depot_loc']     : [B, 2]
+        x['rs_loc']        : [B, n_rs, 2]
+        x['cus_loc']       : [B, n_cus, 2]
+        x['cus_demand']    : [B, n_cus, 1]   # 已经 / capacity
+        x['cus_tw']        : [B, n_cus, 2]   # [start, end] in [0,1]
+        x['cus_service']   : [B, n_cus, 1]   # normalized
+        """
+
+        B = x['depot_loc'].size(0)
+        device = x['depot_loc'].device
+
+        n_rs  = x['rs_loc'].size(1)
+        n_cus = x['cus_loc'].size(1)
+
+        # ----- depot -----
+        depot_loc = x['depot_loc']               # [B,1,2]
+        depot_demand = torch.zeros(B, 1, 1, device=device)      # 0
+        depot_tw = torch.zeros(B, 1, 2, device=device)          # [0,1]
+        depot_tw[..., 1] = 1.0
+        depot_service = torch.zeros(B, 1, 1, device=device)     # 0
+        depot_feat = torch.cat(
+            [depot_loc, depot_demand, depot_tw, depot_service], dim=-1
+        )  # [B,1,6]
+
+        # ----- RS -----
+        rs_loc = x['rs_loc']                                    # [B,n_rs,2]
+        rs_demand = torch.zeros(B, n_rs, 1, device=device)
+        rs_tw = torch.zeros(B, n_rs, 2, device=device)
+        rs_tw[..., 1] = 1.0
+        rs_service = torch.zeros(B, n_rs, 1, device=device)
+
+        rs_feat = torch.cat(
+            [rs_loc, rs_demand, rs_tw, rs_service], dim=-1
+        )  # [B,n_rs,6]
+
+        # ----- customers -----
+        cus_loc = x['cus_loc']                                       # [B,n_cus,2]
+        cus_demand = x['demand'][:, 1:1+n_cus,:]                     # [B,n_cus,1]
+        cus_tw = x['time_window'][:, 1:1+n_cus,:]                    # [B,n_cus,2]
+        cus_service = x['service_time'][:, 1:1+n_cus,:]              # [B,n_cus,1]
+
+        cus_feat = torch.cat(
+            [cus_loc, cus_demand, cus_tw, cus_service], dim=-1
+        )  # [B,n_cus,6]
+
+        # 拼成 [B, 1+n_rs+n_cus, 6]
+        static_feat = torch.cat([depot_feat, rs_feat, cus_feat], dim=1)
+
+        # 节点类型：0 depot, 1 RS, 2 customer
+        depot_type = torch.zeros(B, 1, dtype=torch.long, device=device)
+        rs_type = torch.ones(B, n_rs, dtype=torch.long, device=device)
+        cus_type = torch.full((B, n_cus), 2, dtype=torch.long, device=device)
+        node_type = torch.cat([depot_type, rs_type, cus_type], dim=1)  # [B,N]
+
+        # 做 embedding
+        h_static = self.static_proj(static_feat)                # [B,N,d]
+        h_type = self.type_embed(node_type)                     # [B,N,d]
+
+        node_emb = h_static + h_type                            # [B,N,d]
+
+        return node_emb  # 直接交给后面的 encoder / GNN / transformer
 
 class EVRPTWGraphEmbedding(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):

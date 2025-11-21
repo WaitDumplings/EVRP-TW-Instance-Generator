@@ -7,61 +7,95 @@ class Problem:
         self.NAME = name
 
 class Backbone(nn.Module):
-    def __init__(self,
-                 embedding_dim=128,
-                 problem_name="evrptw",
-                 n_encode_layers=3,
-                 tanh_clipping=15.0,
-                 n_heads=16,
-                 device="cpu",
+    def __init__(
+        self,
+        embedding_dim=128,
+        problem_name="evrptw",
+        n_encode_layers=3,
+        tanh_clipping=15.0,
+        n_heads=16,
+        device="cpu",
+        use_graph_token=False,
     ):
-        super(Backbone, self).__init__()
+        super().__init__()
         self.device = device
         self.problem = Problem(problem_name)
+
         self.embedding = AutoEmbedding(self.problem.NAME, {"embedding_dim": embedding_dim})
 
+        self.use_graph_token = use_graph_token
+        if use_graph_token:
+            self.graph_token = nn.Parameter(torch.empty(1, 1, embedding_dim))
+            nn.init.xavier_uniform_(self.graph_token)
+        else:
+            self.graph_token = None
+
         self.encoder = GraphAttentionEncoder(
-            n_heads = n_heads,
-            embed_dim = embedding_dim,
-            n_layers = n_encode_layers
+            n_heads=n_heads,
+            embed_dim=embedding_dim,
+            n_layers=n_encode_layers,
+            use_graph_token = use_graph_token
         )
 
-        self.decoder = Decoder(
-            embedding_dim, self.embedding.context_dim, n_heads, self.problem, tanh_clipping
-        )
-    
+
+        self.decoder = Decoder(embedding_dim = embedding_dim,
+                               step_context_dim = embedding_dim + 3, # since we need to concat feature with (battery, loading, time). 
+                               n_heads = n_heads,
+                               problem = self.problem,
+                               tanh_clipping = tanh_clipping,
+                               use_graph_token = use_graph_token)
+
+    def _apply_graph_token(self, embedding, mask):
+        """在 [B,N,D] 的 embedding 前面拼一个 [GRAPH] token，并同步更新 mask。"""
+        if self.graph_token is None:
+            return embedding, mask
+
+        B = embedding.size(0)
+        device = embedding.device
+
+        graph_tok = self.graph_token.expand(B, 1, -1)  # [B,1,D]
+        embedding = torch.cat([graph_tok, embedding], dim=1)  # [B,N+1,D]
+
+        if mask is not None:
+            pad = torch.zeros(B, 1, dtype=mask.dtype, device=device)
+            mask = torch.cat([pad, mask], dim=1)  # [B,N+1]
+
+        return embedding, mask
+
     def forward(self, obs, use_mask=False):
-        if not use_mask:
-            mask = None
-        else:
-            mask = obs['instance_mask']
+        mask = obs["instance_mask"] if use_mask else None
+
         state = stateWrapper(obs, device=self.device, problem=self.problem.NAME)
-        input = state.states["observations"]
-        embedding = self.embedding(input)
-        encoded_inputs, _ = self.encoder(embedding, mask = mask)
+        inputs = state.states["observations"]         # Input
+        embedding = self.embedding(inputs)            # [B,N,D]
+
+        embedding, mask = self._apply_graph_token(embedding, mask)
+
+        encoded_inputs = self.encoder(embedding, mask=mask)
 
         # decoding
-        cached_embeddings = self.decoder._precompute(encoded_inputs, mask = mask)
+        cached_embeddings = self.decoder._precompute(encoded_inputs, mask=mask)
         logits, glimpse = self.decoder.advance(cached_embeddings, state, node_mask=mask)
 
         return logits, glimpse
 
     def encode(self, obs, use_mask=False):
-        if use_mask:
-            mask = obs['instance_mask']
-        else:
-            mask = None
+        mask = obs["instance_mask"] if use_mask else None
+        
         state = stateWrapper(obs, device=self.device, problem=self.problem.NAME)
-        input = state.states["observations"]
-        embedding = self.embedding(input)
-        encoded_inputs, _ = self.encoder(embedding, mask = mask)
-        cached_embeedings = self.decoder._precompute(encoded_inputs)
-        return cached_embeedings
-    
+        inputs = state.states["observations"]
+        embedding = self.embedding(inputs)
+
+        embedding, mask = self._apply_graph_token(embedding, mask)
+
+        encoded_inputs = self.encoder(embedding, mask=mask)
+
+        cached_embeddings = self.decoder._precompute(encoded_inputs, mask=mask)
+        return cached_embeddings
+
     def decode(self, obs, cached_embeddings):
         state = stateWrapper(obs, device=self.device, problem=self.problem.NAME)
         logits, glimpse = self.decoder.advance(cached_embeddings, state)
-
         return logits, glimpse
 
 class Actor(nn.Module):
@@ -100,29 +134,16 @@ class Critic(nn.Module):
 
     def forward(self, x):
         return self.mlp(x[1])  
-        
-# class Critic(nn.Module):
-#     def __init__(self, *args, **kwargs):
-#         super(Critic, self).__init__()
-#         hidden_size = kwargs["hidden_size"]
-#         self.mlp = nn.Sequential(
-#             nn.Linear(hidden_size, hidden_size),
-#             nn.LeakyReLU(0.1), 
-#             nn.Linear(hidden_size, 1)
-#         )
-    
-#     def forward(self, x):
-#         out = self.mlp(x[1])
-#         return out
 
 class Agent(nn.Module):
-    def __init__(self, embedding_dim=256, tanh_clipping =15, n_encode_layers = 3, device="cpu", name="evrptw"):
+    def __init__(self, embedding_dim=256, tanh_clipping =15, n_encode_layers = 3, device="cpu", name="evrptw", use_graph_token = False):
         super(Agent, self).__init__()
         self.backbone = Backbone(embedding_dim = embedding_dim,
                                  device = device,
                                  tanh_clipping = tanh_clipping,
                                  n_encode_layers = n_encode_layers,
-                                 problem_name = name)
+                                 problem_name = name,
+                                 use_graph_token = use_graph_token)
         self.critic = Critic(hidden_size = embedding_dim)
         self.actor = Actor()
 
@@ -149,6 +170,7 @@ class Agent(nn.Module):
         return self.critic(x)
     
     def get_action_and_value_cached(self, x, action=None, state=None):
+
         if state is None:
             state = self.backbone.encode(x)
             x = self.backbone.decode(x, state)
@@ -159,6 +181,8 @@ class Agent(nn.Module):
         probs = torch.distributions.Categorical(logits=logits)
         if action is None:
             action = probs.sample()
+
+        # value_state = self.critic(x)
         return action, probs.log_prob(action), probs.entropy(), self.critic(x), state
 
 class stateWrapper:
@@ -171,13 +195,15 @@ class stateWrapper:
                 "cus_loc": self.states["cus_loc"],
                 "rs_loc": self.states["rs_loc"],
                 "time_window": self.states["time_window"],
-                "demand": self.states["demand"],
+                "demand": self.states["demand"].unsqueeze(-1),
+                "service_time": self.states["service_time"].unsqueeze(-1)
             }
+
             self.states["observations"] = input
-            self.VEHICLE_CAPACITY = 0
-            self.VEHICLE_BATTERY = 0
-            self.used_capacity = -self.states["current_load"]
-            self.used_battery  = -self.states["current_battery"]
+            self.VEHICLE_CAPACITY = self.states['loading_capacity']
+            self.VEHICLE_BATTERY = self.states['battery_capacity']
+            self.used_capacity = self.states["current_load"]
+            self.used_battery  = self.states["current_battery"]
             self.current_time = self.states["current_time"]
 
 

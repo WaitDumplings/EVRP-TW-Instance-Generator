@@ -85,7 +85,7 @@ class AttentionModel(nn.Module):
 
     def forward(self, input):
         embedding = self.embedding(input)
-        encoded_inputs, _ = self.encoder(embedding)
+        encoded_inputs = self.encoder(embedding)
         _log_p, pi = self.decoder(input, encoded_inputs)
         ll = self._calc_log_likelihood(_log_p, pi)
         return ll, pi

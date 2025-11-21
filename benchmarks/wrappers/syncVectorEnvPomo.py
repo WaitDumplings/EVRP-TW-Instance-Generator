@@ -67,6 +67,7 @@ class SyncVectorEnv(VectorEnv):
         )
 
         self._check_spaces()
+
         self.observations = create_empty_array(
             self.single_observation_space, n=self.num_envs, fn=np.zeros
         )
@@ -117,6 +118,14 @@ class SyncVectorEnv(VectorEnv):
                 observation, data = env.reset(**kwargs)
                 observations.append(observation)
                 data_list.append(data)
+                
+        # ############# For DEBUG #################
+        # print()
+        # breakpoint()
+        # for key, value in self.single_observation_space.items():
+        #     print(key, value.shape, observations[0][key].shape,  self.observations[key].shape)
+        # breakpoint()
+        # #########################################
 
         self.observations = concatenate(self.single_observation_space, observations, self.observations)
         if not return_info:
