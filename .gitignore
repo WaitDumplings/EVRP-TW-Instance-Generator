@@ -160,7 +160,7 @@ temp/
 *.tmp
 
 # Custom project-specific ignores
-data/
+dataset/
 output/
 results/
 runs/
