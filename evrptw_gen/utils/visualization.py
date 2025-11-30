@@ -83,6 +83,7 @@ def save_instances(instances, save_path, template='solomon'):
                 for k, c in enumerate(customers):
                     # c may be list/tuple/ndarray, possibly nested; robustly extract six fields
                     arr = np.asarray(c, dtype=float).reshape(-1)
+
                     if arr.size < 6:
                         raise ValueError(f"Customer row must have 6 numbers (x,y,demand,ready,due,service), got: {c}")
                     x, y, demand, ready, due, service = arr[:6]

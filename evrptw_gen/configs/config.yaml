@@ -1,8 +1,8 @@
 # config.yaml
 # Geometric and Quantity Parameters
 area_size: [[0.0, 100.0], [0.0, 100.0]]     # km
-num_customers: 100
-num_charging_stations: 20
+num_customers: 5
+num_charging_stations: 3
 num_cluster: 5
 instance_type_distribution: {R: 1.0, C: 0.0, RC: 0.0}
 dist_fun: "2-norm"
@@ -45,7 +45,7 @@ vehicles_profiles:
   - name: "Test"                    # For Test
     type: "for test"
     speed: 40.0                            # km/h
-    battery_capacity: 30                  # kWh
+    battery_capacity: 100                  # kWh
     consumption_per_distance: 0.5           # kWh/km
     loading_capacity: 1.2                  # tons (Capacity)
     notes: "Slate Auto low-cost EV pickup truck (under $20k after incentives)."

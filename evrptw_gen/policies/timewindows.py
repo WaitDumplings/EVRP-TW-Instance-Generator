@@ -15,6 +15,7 @@ class TimeWindowPolicy(Protocol):
         time_depot_to_cuss: np.ndarray,
         time_cus_to_depot: np.ndarray,
         rng: np.random.Generator,
+        tw_format: str
     ) -> np.ndarray:
         ...
 
@@ -30,6 +31,7 @@ class NarrowTWPolicy:
         t_latest,            # (N,)
         service_time,         # (N,) or scalar
         rng,
+        tw_format = "hours"
     ):
         """
         Generate (N, 2) time windows under 'Narrow' policy.
@@ -74,6 +76,10 @@ class NarrowTWPolicy:
         starts = np.maximum(starts, lb)
         ends   = np.minimum(ends, ub)
 
+        if tw_format == "hours":
+            starts /= 60
+            ends /= 60
+            
         tw = np.stack([np.round(starts, round_ndigits), np.round(ends, round_ndigits)], axis=1)
         return tw
 
@@ -89,6 +95,7 @@ class WideTWPolicy:
         t_latest,            # (N,)
         service_time,         # (N,) or scalar
         rng,
+        tw_format = "hours"
     ):
         """
         Generate (N, 2) time windows under 'Narrow' policy.
@@ -110,7 +117,6 @@ class WideTWPolicy:
         ub = float(env["working_endTime"])
  
         if np.any(t_earliest > t_latest + 1e-6):
-            breakpoint()
             raise ValueError("t_earliest cannot be greater than t_latest for any customer.")
 
         centers = t_earliest + (t_latest - t_earliest) * np.random.rand(len(t_earliest))
@@ -133,6 +139,10 @@ class WideTWPolicy:
         # intersect with feasible [lb, ub]
         starts = np.maximum(starts, lb)
         ends   = np.minimum(ends, ub)
+
+        if tw_format == "hours":
+            starts /= 60
+            ends /= 60
 
         tw = np.stack([np.round(starts, round_ndigits), np.round(ends, round_ndigits)], axis=1)
         return tw

@@ -175,9 +175,10 @@ class InstanceGenerator:
         )
 
         tw = tw_policy.build(
-            env, t_earliest, t_latest, service_time, rng=self.rng
+            env, t_earliest, t_latest, service_time, rng=self.rng, tw_format = "hours"
         )
-        
+        # breakpoint()
+        format = "aaa"
         if format == "tensor":
             customers_pos = cus_pos
             demand = demand
