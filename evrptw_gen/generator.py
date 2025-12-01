@@ -180,6 +180,7 @@ class InstanceGenerator:
 
         # In case we may need for different policies.
         env['demand'] = demand 
+        env['cs_time_to_depot'] = cs_time_to_depot
 
         cus_pos, service_time, t_earliest, t_latest = pos_policy.sample(
             env, depot_pos, cs_pos, cs_time_to_depot, depot_time_to_cs, service_time_policy, rng=self.rng

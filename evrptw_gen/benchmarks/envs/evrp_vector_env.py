@@ -41,15 +41,16 @@ class EVRPTWVectorEnv(gym.Env):
         save_path = kwargs.get("save_path", None)
         num_instances = kwargs.get("num_instances", 1)
         plot_instances = kwargs.get("plot_instances", False)
-
         self.dataset = InstanceGenerator(self.config_path, 
                                          save_path=save_path, 
                                          num_instances=num_instances, 
                                          plot_instances=plot_instances,
                                          kwargs=kwargs)
+
         config_data = self.dataset.config.data
 
         # 
+
         self.cus_num         = config_data.get('num_customers', None)
         self.rs_num          = config_data.get('num_charging_stations', None)
 
@@ -138,10 +139,96 @@ class EVRPTWVectorEnv(gym.Env):
     def _update_mask(self):
         # Need to update
 
+        # cus_start_idx
+        cus_start_idx = 1
+        rs_start_idx = 1 + self.cus_num
+
         # 有哪些Mask需要更新？
         # (1) 访问过的customer不能在访问
-        # (2) 
+        # (2) Demand 超过载重不能访问
+        # (3) battery 不足不能访问
+        # (4) time_window 超过不能访问
+        # (5)Future Fesibility Pruning
+
+        # (1) 访问过的customer不能在访问
         action_mask = ~self.visited
+
+        # (2) Demand 超过载重不能访问
+        load_mask = (self.load[:, None] + self.demands[None, :]) <= self.loading_capacity
+        action_mask = action_mask & load_mask
+
+        # (3) battery 不足不能访问
+        battery_need = self.battery[:, None] + self.battery_matrix[self.last, :]  # n_traj x (1 + cus_num + rs_num)
+        battery_mask = (battery_need <= self.battery_capacity)
+        action_mask = action_mask & battery_mask
+
+        # (4) time_window 超过不能访问
+        time_after_arrival = self.current_time[:, None] + (self.dist_matrix[self.last, :] / self.velocity)[:, :]  # n_traj x (1 + cus_num + rs_num)
+        time_mask = (time_after_arrival <= self.time_window[:, 1][None, :])
+        action_mask = action_mask & time_mask
+
+        # (5)Future Fesibility Pruning
+        cus_idx = np.arange(cus_start_idx, rs_start_idx)  # 所有 customer 下标
+        rs_cols = np.r_[0, rs_start_idx:self.dist_matrix.shape[1]]  # depot + 所有 RS
+        n_cus = len(cus_idx)
+        n_rs_plus_depot = len(rs_cols)
+
+        # 1) 当前点 -> customer
+        time_to_customer = self.dist_matrix[self.last[:, None], cus_idx] / self.velocity  # (n_traj, n_cus)
+        # 或者：time_to_customer = self.dist_matrix[self.last, cus_start_idx:rs_start_idx] / self.velocity
+
+        # 电量到达 customer 时
+        battery_at_customer = self.battery[:, None] + time_to_customer * self.energy_consum_rate  # (n_traj, n_cus)
+
+        # 已经在 (4) 里保证到达不超过 TW close，这里简单用“到达 + 服务时间”
+        # 但是应该从 max(tw[:, 0], self.current_time[:, None] + time_to_customer) 开始算起才对
+        # 所有 customer 的 time window 左端点 [open]
+        tw_open = self.time_window[cus_start_idx:rs_start_idx, 0][None, :]   # (1, n_cus)
+
+        # 当前到达 customer 的时间
+        arrival_time = self.current_time[:, None] + time_to_customer        # (n_traj, n_cus)
+
+        # 逐元素取 max：到得早就等到 tw_open，晚到就直接开始服务
+        start_service_time = np.maximum(arrival_time, tw_open)              # (n_traj, n_cus)
+
+        # 离开 customer 的时间 = 开始服务时间 + 服务时长
+        time_after_service = start_service_time + self.service_time[cus_start_idx:rs_start_idx][None, :]  # (n_traj, n_cus)
+
+        # 2) customer -> RS/depot 的最短时间
+        # dist_matrix[customer, rs_cols]：shape (n_cus, 1+n_rs)
+        time_cust_to_rs = self.dist_matrix[np.ix_(cus_idx, rs_cols)] / self.velocity  # (n_cus, n_rs_plus_depot)
+
+        # 扩成 3D： (n_traj, n_cus, n_rs_plus_depot)
+        time_cust_to_rs = time_cust_to_rs[None, :, :]
+
+        # 3) customer 到达时的电量/时间扩成 3D
+        battery_at_customer_3d = battery_at_customer[:, :, None]        # (n_traj, n_cus, 1)
+        time_after_service_3d = time_after_service[:, :, None]          # (n_traj, n_cus, 1)
+
+        # 4) 到达 RS/depot 时的电量 & 时间
+        battery_at_rs = battery_at_customer_3d + time_cust_to_rs * self.energy_consum_rate  # (n_traj, n_cus, n_rs_plus_depot)
+        time_at_rs = time_after_service_3d + time_cust_to_rs                               # (n_traj, n_cus, n_rs_plus_depot)
+
+        # 5) 在 RS 充电，然后回 depot
+        RS_time_to_depot = np.concatenate([np.zeros((1,)), self.RS_time_to_depot])  # (n_rs_plus_depot,)
+        RS_time_to_depot_3d = RS_time_to_depot[None, :, None]                       # (1,1,n_rs_plus_depot)
+
+        # 简单起见：充满电需要的时间（或你可以用别的策略）
+        time_charge_at_rs = (battery_at_rs / self.charging_power)
+        time_charge_at_rs[:, :, 0] = 0.0  # depot 不充电
+        total_finish_time = time_at_rs + time_charge_at_rs + RS_time_to_depot_3d  # (n_traj, n_cus, n_rs_plus_depot)
+
+        # 6) 可行性判断
+        time_feasible = (total_finish_time <= self.instance_max_time)
+        battery_feasible = (battery_at_rs <= self.battery_capacity)
+
+        feasible = time_feasible & battery_feasible  # (n_traj, n_cus, n_rs_plus_depot)
+
+        # 对每个 customer，看是否存在至少一个 RS/depot 可行
+        FFP_cus_mask = feasible.any(axis=2)  # (n_traj, n_cus)
+
+        # 只更新 customer 的 action_mask
+        action_mask[:, cus_start_idx:rs_start_idx] &= FFP_cus_mask
 
         self.mask = action_mask
         return action_mask
@@ -177,6 +264,10 @@ class EVRPTWVectorEnv(gym.Env):
             self._update_env(env)
         
         context = self.dataset.generate_tensors()
+
+        RS_time_to_depot = context['env']['cs_time_to_depot']
+        self.RS_time_to_depot = np.concatenate([np.zeros((1,)), RS_time_to_depot])
+
         self.depot_num = context["depot"].shape[0]
         self.cus_num = context['customers'].shape[0]
         self.rs_num = context['charging_stations'].shape[0]
@@ -256,7 +347,6 @@ class EVRPTWVectorEnv(gym.Env):
         raise NotImplementedError("Not Implement Yet!")
     
     def _go_to(self, destination):
-        breakpoint()
         dest_node = self.nodes[destination]
         dist = fun_dist(dest_node, self.nodes[self.last]) 
         cus_start_idx = 1
