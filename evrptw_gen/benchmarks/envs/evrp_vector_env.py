@@ -41,10 +41,12 @@ class EVRPTWVectorEnv(gym.Env):
         save_path = kwargs.get("save_path", None)
         num_instances = kwargs.get("num_instances", 1)
         plot_instances = kwargs.get("plot_instances", False)
+
         self.dataset = InstanceGenerator(self.config_path, 
                                          save_path=save_path, 
                                          num_instances=num_instances, 
-                                         plot_instances=plot_instances)
+                                         plot_instances=plot_instances,
+                                         kwargs=kwargs)
         config_data = self.dataset.config.data
 
         # 
@@ -87,7 +89,6 @@ class EVRPTWVectorEnv(gym.Env):
         np.random.seed(seed)
 
     def _STEP(self, action):
-        # self._dist_matrix()
         self._go_to(action)  # Go to node 'action', modify the reward
         self.num_steps += 1
         self.state = self._update_state()
@@ -131,12 +132,15 @@ class EVRPTWVectorEnv(gym.Env):
         self.current_time = self.current_time[index]
         self.state = self._update_state(update_mask=False)
 
-        self.prev = self.prev[index]
         self.visited = self.visited[index]
         self.done = self.done[index]
 
     def _update_mask(self):
         # Need to update
+
+        # 有哪些Mask需要更新？
+        # (1) 访问过的customer不能在访问
+        # (2) 
         action_mask = ~self.visited
 
         self.mask = action_mask
@@ -149,7 +153,6 @@ class EVRPTWVectorEnv(gym.Env):
         self.traj = []
         self.restrictions = np.empty((0, 2), dtype=int)
         self.last = np.zeros(self.n_traj, dtype=int)  # idx of the cur elem
-        self.prev = np.zeros(self.n_traj, dtype=int)  # idx of the prev elem
         self.load = np.zeros(self.n_traj, dtype=float)  # current load
         self.battery = np.zeros(self.n_traj, dtype=float)  # current battery
         self.current_time = np.zeros(self.n_traj, dtype=float)  # current battery
@@ -253,17 +256,16 @@ class EVRPTWVectorEnv(gym.Env):
         raise NotImplementedError("Not Implement Yet!")
     
     def _go_to(self, destination):
-
+        breakpoint()
         dest_node = self.nodes[destination]
         dist = fun_dist(dest_node, self.nodes[self.last]) 
-        self.prev = self.last.copy()
-        self.last = destination.copy()
         cus_start_idx = 1
         rs_start_idx = 1 + self.cus_num
 
         go_to_depot = (destination == 0)
         go_to_rs = (destination >= rs_start_idx)
-        go_to_cus = (cus_start_idx <= destination) & (destination < rs_start_idx)
+        go_to_cus = (destination >= cus_start_idx) & (destination < rs_start_idx)
+        go_to_rs_or_cus = ~go_to_depot
 
         ################################ Reward Update ################################
         if self.env_mode == "eval":
@@ -274,16 +276,15 @@ class EVRPTWVectorEnv(gym.Env):
             raise ValueError("Unknown Mode : {}".format(self.eval_partition))
 
         ################################ Load Update ################################
-        self.load[destination == 0] = 0
-        self.load[destination > 0] += self.demands[destination[destination > 0]]
+        # Go to Depot -> unload all
+        self.load[go_to_depot] = 0
+
+        # Go to Customer / RS -> load demand (demands at RS is 0)
+        self.load[go_to_rs_or_cus] += self.demands[destination[go_to_rs_or_cus]]
 
         ################################ Time Update ################################
-        self.current_time[destination == 0] = 0
-
-        # arrive and serve time
-        # Start from node i -> node j (travel: serve for node i, travel from i -> j)
-        # arrive time (current_time = service time + travel time)
-        self.current_time[destination > 0] += (self.dist_matrix[self.prev, destination] / self.velocity)[destination > 0]
+        self.current_time[go_to_depot] = 0
+        self.current_time[go_to_rs_or_cus] += (self.dist_matrix[self.last, destination] / self.velocity)[go_to_rs_or_cus]
 
         # arrive time >= time_window start time
         self.current_time[go_to_cus] = np.max((self.current_time[go_to_cus], self.time_window[destination[go_to_cus], 0]), axis=0)
@@ -292,20 +293,16 @@ class EVRPTWVectorEnv(gym.Env):
         self.current_time += self.service_time[destination]
 
         # charging time at RS (Need TO Update)
-        self.current_time[go_to_rs] += (self.battery + self.battery_matrix[self.prev, destination])[go_to_rs] / self.charging_power
+        self.current_time[go_to_rs] += (self.battery + self.battery_matrix[self.last, destination])[go_to_rs] / self.charging_power
 
-        ################################ Demand Update ################################
-        # self.demands_with_depot[destination[destination > 0] - 1] = 0
-        self.load += self.demands[destination]
-        self.visited[np.arange(self.n_traj), destination] = True
-        
         ################################ Battery Update ################################
-        # less_than = destination < (self.rs_num + 1)
-        # self.battery[less_than] -= self.battery_matrix[self.prev, destination][less_than]
-
         self.battery[go_to_depot] = 0
         self.battery[go_to_rs] = 0
-        self.battery[go_to_cus] += (self.dist_matrix[self.prev, destination] / self.energy_consum_rate)[go_to_cus]
+        self.battery[go_to_cus] += (self.dist_matrix[self.last, destination] / self.energy_consum_rate)[go_to_cus]
+
+        ################################ Visit Node Update ############################
+        self.visited[np.arange(self.n_traj), destination] = True
+        self.last = destination
 
     def step(self, action):
         # return last state after done,

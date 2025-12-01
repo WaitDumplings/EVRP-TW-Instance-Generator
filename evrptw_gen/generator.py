@@ -37,6 +37,12 @@ from .utils.energy_consumption_model import consumption_model
 class InstanceGenerator:
     def __init__(self, config_path: str, **kwargs):
         self.config = Config(config_path)
+        self.config.data.update({
+            k: v
+            for k, v in kwargs['kwargs'].items()
+            if k in self.config.data
+        })
+
         self.save_path: Optional[str] = kwargs.get("save_path")
         self.num_instances: int = int(kwargs.get("num_instances", 100))
         self.plot_instance: bool = bool(kwargs.get("plot_instances", True))
@@ -147,11 +153,16 @@ class InstanceGenerator:
                 plot_instance(instances, Instance_save_path)
         return instances
 
-    def generate_tensors(self, env = None):
+    def generate_tensors(self, env = None, args = None):
         if env == None:
             env = self.env
         context = self._generate_one_instance(env, format = "tensor")
         return context
+
+    def _update_envs(self, args):
+        for key, value in vars(args).items():
+            if key in self.env:
+                self.env[key] = value
 
     def _generate_one_instance(self, env: Dict, format = "tensor") -> Dict:
         # Select policies from env
@@ -178,7 +189,7 @@ class InstanceGenerator:
             env, t_earliest, t_latest, service_time, rng=self.rng, tw_format = "hours"
         )
         # breakpoint()
-        format = "aaa"
+
         if format == "tensor":
             customers_pos = cus_pos
             demand = demand
