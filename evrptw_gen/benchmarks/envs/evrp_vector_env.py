@@ -210,8 +210,7 @@ class EVRPTWVectorEnv(gym.Env):
         time_at_rs = time_after_service_3d + time_cust_to_rs                               # (n_traj, n_cus, n_rs_plus_depot)
 
         # 5) 在 RS 充电，然后回 depot
-        RS_time_to_depot = np.concatenate([np.zeros((1,)), self.RS_time_to_depot])  # (n_rs_plus_depot,)
-        RS_time_to_depot_3d = RS_time_to_depot[None, :, None]                       # (1,1,n_rs_plus_depot)
+        RS_time_to_depot_3d = self.RS_time_to_depot[None, None, :]                       # (1,1,n_rs_plus_depot)
 
         # 简单起见：充满电需要的时间（或你可以用别的策略）
         time_charge_at_rs = (battery_at_rs / self.charging_power)
@@ -262,7 +261,7 @@ class EVRPTWVectorEnv(gym.Env):
     def _train_data_generate(self, env = None):
         if env:
             self._update_env(env)
-        
+
         context = self.dataset.generate_tensors()
 
         RS_time_to_depot = context['env']['cs_time_to_depot']

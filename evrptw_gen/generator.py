@@ -186,15 +186,14 @@ class InstanceGenerator:
             env, depot_pos, cs_pos, cs_time_to_depot, depot_time_to_cs, service_time_policy, rng=self.rng
         )
 
-        tw = tw_policy.build(
-            env, t_earliest, t_latest, service_time, rng=self.rng, tw_format = "hours"
-        )
-        # breakpoint()
-
         if format == "tensor":
+            # tensor use minutes as format
+            tw = tw_policy.build(
+            env, t_earliest, t_latest, service_time, rng=self.rng, tw_format = "minutes"
+            )
             customers_pos = cus_pos
             demand = demand
-            service_time = service_time
+            service_time = service_time * 60  # convert to minutes
 
             return {"env": env, 
                     "depot": depot_pos, 
@@ -203,9 +202,15 @@ class InstanceGenerator:
                     "demands":demand, 
                     "tw":tw,
                     "service_time":service_time}
-            
-        customers = np.hstack([cus_pos, demand.reshape(-1, 1), tw, service_time.reshape(-1, 1)])
-        return {"env": env, "depot": depot_pos, "customers": customers, "charging_stations": cs_pos}
+        elif format == "solomon":
+            # solomon use hours as format
+            tw = tw_policy.build(
+                env, t_earliest, t_latest, service_time, rng=self.rng, tw_format = "hours"
+            ) 
+            customers = np.hstack([cus_pos, demand.reshape(-1, 1), tw, service_time.reshape(-1, 1)])
+            return {"env": env, "depot": depot_pos, "customers": customers, "charging_stations": cs_pos}
+        else:
+            raise ValueError(f"Unknown format: {format}")
 
     def _get_depot_position(self, env: Dict) -> np.ndarray:
         """
