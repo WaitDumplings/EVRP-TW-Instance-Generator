@@ -118,7 +118,7 @@ def train(args):
                   name=args.problem, 
                   tanh_clipping = args.tanh_clipping, 
                   n_encode_layers = args.n_encode_layers,
-                  use_graph_token = True)
+                  use_graph_token = True).to(device)
 
     optimizer = optim.AdamW(
         agent.parameters(), lr=args.learning_rate, eps=1e-5, weight_decay=args.weight_decay
@@ -176,6 +176,7 @@ def train(args):
 
             agent.train()
             next_obs = envs.reset()
+
             encoder_state = agent.backbone.encode(next_obs)
             next_done = torch.zeros(args.num_envs, args.n_traj).to(device)
             r = []
@@ -195,7 +196,6 @@ def train(args):
                     values[step] = value.view(args.num_envs, args.n_traj)
                 actions[step] = action
                 logprobs[step] = logprob.view(args.num_envs, args.n_traj)
-                breakpoint()
                 next_obs, reward, done, info = envs.step(action.cpu().numpy())
                 rewards[step] = torch.tensor(reward).to(device)
                 next_obs, next_done = next_obs, torch.Tensor(done).to(device)

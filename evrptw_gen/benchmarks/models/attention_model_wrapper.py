@@ -22,7 +22,7 @@ class Backbone(nn.Module):
         self.problem = Problem(problem_name)
 
         self.embedding = AutoEmbedding(self.problem.NAME, {"embedding_dim": embedding_dim})
-
+        
         self.use_graph_token = use_graph_token
         if use_graph_token:
             self.graph_token = nn.Parameter(torch.empty(1, 1, embedding_dim))
@@ -84,6 +84,7 @@ class Backbone(nn.Module):
         
         state = stateWrapper(obs, device=self.device, problem=self.problem.NAME)
         inputs = state.states["observations"]
+
         embedding = self.embedding(inputs)
 
         embedding, mask = self._apply_graph_token(embedding, mask)
