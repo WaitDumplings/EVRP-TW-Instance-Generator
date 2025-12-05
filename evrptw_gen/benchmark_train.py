@@ -113,7 +113,7 @@ def parse_args():
     parser.add_argument(
         "--num-envs",
         type=int,
-        default=1,
+        default=64,
         help="the number of parallel game environments",
     )
     parser.add_argument(
@@ -145,7 +145,7 @@ def parse_args():
     parser.add_argument(
         "--num-minibatches",
         type=int,
-        default=32,
+        default=4,
         help="the number of mini-batches",
     )
     parser.add_argument(
@@ -163,7 +163,7 @@ def parse_args():
     parser.add_argument(
         "--n_encode_layers",
         type=int,
-        default=4,
+        default=3,
         help="number of encoder layers",
     )
     parser.add_argument(
@@ -197,7 +197,7 @@ def parse_args():
     parser.add_argument(
         "--vf-coef",
         type=float,
-        default=0.6,
+        default=0.5,
         help="coefficient of the value function",
     )
     parser.add_argument(
@@ -215,8 +215,8 @@ def parse_args():
     parser.add_argument(
         "--n-traj",
         type=int,
-        default=2,
-        help="number of trajectories in a vectorized sub-environment",
+        default=10,
+        help="number of trajectories(players) in a vectorized sub-environment",
     )
     parser.add_argument(
         "--n-test",
@@ -237,18 +237,6 @@ def parse_args():
         type=int,
         default=100,
         help="test agent",
-    )
-    parser.add_argument(
-        "--beam_search",
-        type=bool,
-        default=False,
-        help="beam_search",
-    )
-    parser.add_argument(
-        "--beam_size",
-        type=int,
-        default=20,
-        help="beam_search size",
     )
     parser.add_argument(
         "--temperature",

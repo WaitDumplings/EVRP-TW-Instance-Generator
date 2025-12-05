@@ -92,8 +92,7 @@ class EVRPTWVectorEnv(gym.Env):
             raise ValueError(
                 "Customer number or charging station number is not predefined!"
             )
-
-        self.env_mode = "train"
+        self.env_mode = kwargs.get("env_mode", "train")  # "train" or "eval"
         assign_env_config(self, kwargs)
 
         # ====== Observation / Action spaces ======
@@ -153,7 +152,7 @@ class EVRPTWVectorEnv(gym.Env):
 
         # 1) Static data (instance) generation + normalization
         if self.env_mode == "eval":
-            self._eval_data_generate()
+            self._eval_data_generate(mode = self.eval_mode)
         elif self.env_mode == "train":
             self._train_data_generate()
         else:
@@ -355,11 +354,22 @@ class EVRPTWVectorEnv(gym.Env):
 
         self._normalizations(context)
 
-    def _eval_data_generate(self):
+    def _eval_data_generate(self, mode):
         """
         TODO: implement evaluation data generation if needed.
         """
-        raise NotImplementedError("Not Implemented Yet!")
+        if mode == "fixed":
+            context = self.dataset.generate_tensors()
+            self.context = context
+            self.depot_num = context["depot"].shape[0]
+            self.cus_num = context["customers"].shape[0]
+            self.rs_num = context["charging_stations"].shape[0]
+
+            self._normalizations(context)
+        elif mode == "solomon_txt":
+            raise NotImplementedError("Not Implemented Yet!")
+        else:
+            raise ValueError(f"Unknown eval mode: {mode}")
 
     def _normalizations(self, context):
         """
@@ -509,7 +519,8 @@ class EVRPTWVectorEnv(gym.Env):
                 C = 10.0  # 惩罚系数，你可以之后调
                 terminal_penalty = -C * unserved_cus.astype(np.float32)
 
-                self.reward = self.reward + terminal_penalty * self.done.astype(np.float32)
+                self.reward = self.reward + terminal_penalty
+                self.terminate = False
 
         else:
             raise ValueError(f"Unknown Mode: {self.env_mode}")
@@ -521,6 +532,7 @@ class EVRPTWVectorEnv(gym.Env):
         self.load[go_to_rs_or_cus] += self.demands[destination[go_to_rs_or_cus]]
 
         # -------- Time update (normalized) --------
+        self.current_time[go_to_depot] = 0.0  # at depot, time reset to 0
         # 1) travel time
         self.current_time[go_to_rs_or_cus] += self.travel_time[
             self.last, destination
@@ -547,6 +559,8 @@ class EVRPTWVectorEnv(gym.Env):
         # -------- Battery update (normalized consumed SoC) --------
         # at depot we assume fully charged, so consumed = 0
         self.battery[go_to_depot] = 0.0
+        self.battery[go_to_rs] = 0.0 # we have fixed it in (4) charging time above
+
         # already handled RS above (set to 0)
         # here we only add travel consumption when going to customers
         self.battery[go_to_cus] += self.edge_energy[self.last, destination][go_to_cus]
