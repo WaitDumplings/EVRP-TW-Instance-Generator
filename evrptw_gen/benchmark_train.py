@@ -113,7 +113,7 @@ def parse_args():
     parser.add_argument(
         "--num-envs",
         type=int,
-        default=2,
+        default=1,
         help="the number of parallel game environments",
     )
     parser.add_argument(
@@ -215,7 +215,7 @@ def parse_args():
     parser.add_argument(
         "--n-traj",
         type=int,
-        default=10,
+        default=2,
         help="number of trajectories in a vectorized sub-environment",
     )
     parser.add_argument(

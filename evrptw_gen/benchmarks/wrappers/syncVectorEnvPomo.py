@@ -179,6 +179,20 @@ class SyncVectorEnv(VectorEnv):
         for env, value in zip(self.envs, values):
             setattr(env, name, value)
 
+
+    def update_attr(self, name, values):
+        if not isinstance(values, (list, tuple)):
+            values = [values for _ in range(self.num_envs)]
+        if len(values) != self.num_envs:
+            raise ValueError(
+                "Values must be a list or tuple with length equal to the "
+                f"number of environments. Got `{len(values)}` values for "
+                f"{self.num_envs} environments."
+            )
+
+        for env, value in zip(self.envs, values):
+            setattr(env.env.env.env, name, value)
+
     def close_extras(self, **kwargs):
         """Close the environments."""
         [env.close() for env in self.envs]

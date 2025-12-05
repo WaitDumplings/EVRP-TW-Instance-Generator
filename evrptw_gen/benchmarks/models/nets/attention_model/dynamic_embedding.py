@@ -4,6 +4,16 @@ Problem specific node embedding for dynamic feature.
 
 import torch.nn as nn
 
+def AutoDynamicContextEmbedding(problem_name, config):
+    """
+    Automatically select the corresponding module according to ``problem_name``
+    """
+    mapping = {
+        "evrptw": EVRPTWDynamicContextEmbedding,
+    }
+    embeddingClass = mapping[problem_name]
+    embedding = embeddingClass(**config)
+    return embedding
 
 def AutoDynamicEmbedding(problem_name, config):
     """
@@ -48,6 +58,23 @@ class SDVRPDynamicEmbedding(nn.Module):
             state.demands_with_depot[:, 0, :, None].clone()
         ).chunk(3, dim=-1)
         return glimpse_key_dynamic, glimpse_val_dynamic, logit_key_dynamic
+
+class EVRPTWDynamicContextEmbedding(nn.Module):
+    """
+    Context embedding for dynamic feature for the electric vehicle routing problem with time windows.
+
+    It is implemented as a concatenation of normalized used capacity, used battery and current time.
+
+    Args:
+        context_dim: dimension of output
+    Inputs: embeddings, state
+    """
+    def __init__(self, embedding_dim):
+        super(EVRPTWDynamicContextEmbedding, self).__init__()
+
+    def forward(self, state):
+        return 0
+
 
 
 class NonDyanmicEmbedding(nn.Module):

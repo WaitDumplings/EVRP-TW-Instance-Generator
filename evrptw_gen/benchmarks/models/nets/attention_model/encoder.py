@@ -53,7 +53,6 @@ class GraphAttentionEncoder(nn.Module):
         n_layers: int,
         feed_forward_hidden: int = 512,
         dropout: float = 0.1,
-        use_graph_token: bool = False,
     ):
         super().__init__()
 
@@ -70,13 +69,6 @@ class GraphAttentionEncoder(nn.Module):
         )
         self.final_norm = nn.LayerNorm(embed_dim)
 
-        self.use_graph_token = use_graph_token
-        if use_graph_token:
-            self.graph_token = nn.Parameter(torch.empty(1, 1, embed_dim))
-            nn.init.xavier_uniform_(self.graph_token)
-        else:
-            self.graph_token = None
-
     def forward(self, x, mask=None, attn_bias=None):
         """
         x: [B, N, D]
@@ -84,25 +76,12 @@ class GraphAttentionEncoder(nn.Module):
         attn_bias: [B, N, N] (可选，将来可以放 EVRPTW 距离/时间窗 bias)
         """
 
-        # 2) 扩展 attn_bias（如果有）
-        if attn_bias is not None and self.graph_token is not None:
-            # 原 attn_bias: [B, N, N]
-            # 扩到 [B, N+1, N+1]，graph token 那一行/列先设为 0
-            attn_bias = F.pad(attn_bias, (1, 0, 1, 0), value=0.0)
-
         # 3) 多层 attention
         for layer in self.layers:
             x = layer(x, mask=mask, attn_bias=attn_bias)
 
         # 4) final LN
         x = self.final_norm(x)  # [B, N(+1), D]
-
-        # if self.graph_token is not None:
-        #     graph_emb = x[:, 0, :]   # [B, D]
-        #     node_features = x[:, 1:, :]
-        # else:
-        #     graph_emb = self._masked_mean(x, mask)  # [B,D]
-        #     node_features = x
 
         return x
 

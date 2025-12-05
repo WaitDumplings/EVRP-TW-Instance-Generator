@@ -38,7 +38,7 @@ class AttentionScore(nn.Module):
                 mask_exp = mask.unsqueeze(1)   # [B,1,K]
             else:
                 mask_exp = mask               # [B,1,K]
-            mask_exp = mask_exp.to(logits.device).unsqueeze(0)  # [1,B,1,K]
+            mask_exp = mask_exp.to(logits.device)  # [B,1,K]
             logits = logits.masked_fill(mask_exp, float("-inf"))
 
         return logits

@@ -22,24 +22,18 @@ class Backbone(nn.Module):
         self.problem = Problem(problem_name)
 
         self.embedding = AutoEmbedding(self.problem.NAME, {"embedding_dim": embedding_dim})
-        
         self.use_graph_token = use_graph_token
-        if use_graph_token:
-            self.graph_token = nn.Parameter(torch.empty(1, 1, embedding_dim))
-            nn.init.xavier_uniform_(self.graph_token)
-        else:
-            self.graph_token = None
+        self.graph_token = nn.Parameter(torch.empty(1, 1, embedding_dim))
+        nn.init.xavier_uniform_(self.graph_token)
 
         self.encoder = GraphAttentionEncoder(
             n_heads=n_heads,
             embed_dim=embedding_dim,
             n_layers=n_encode_layers,
-            use_graph_token = use_graph_token
         )
 
-
         self.decoder = Decoder(embedding_dim = embedding_dim,
-                               step_context_dim = embedding_dim + 3, # since we need to concat feature with (battery, loading, time). 
+                               step_context_dim = embedding_dim + 5, # since we need to concat feature with (battery, loading, time). 
                                n_heads = n_heads,
                                problem = self.problem,
                                tanh_clipping = tanh_clipping,
@@ -47,7 +41,7 @@ class Backbone(nn.Module):
 
     def _apply_graph_token(self, embedding, mask):
         """在 [B,N,D] 的 embedding 前面拼一个 [GRAPH] token，并同步更新 mask。"""
-        if self.graph_token is None:
+        if self.use_graph_token is None:
             return embedding, mask
 
         B = embedding.size(0)
@@ -171,14 +165,13 @@ class Agent(nn.Module):
         return self.critic(x)
     
     def get_action_and_value_cached(self, x, action=None, state=None):
-
+        # breakpoint()
         if state is None:
             state = self.backbone.encode(x)
             x = self.backbone.decode(x, state)
         else:
             x = self.backbone.decode(x, state)
         logits = self.actor(x)
-
         probs = torch.distributions.Categorical(logits=logits)
         if action is None:
             action = probs.sample()
@@ -206,6 +199,8 @@ class stateWrapper:
             self.used_capacity = self.states["current_load"]
             self.used_battery  = self.states["current_battery"]
             self.current_time = self.states["current_time"]
+            self.visited_customers_raio = self.states["visited_customers_raio"]
+            self.remain_feasible_customers_raio = self.states["remain_feasible_customers_raio"]
 
 
     def get_current_node(self):

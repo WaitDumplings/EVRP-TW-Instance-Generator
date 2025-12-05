@@ -104,6 +104,8 @@ class VRPContext(PrevNodeContext):
         state_embedding_capacity = (state.used_capacity / state.VEHICLE_CAPACITY).unsqueeze(-1)
         state_embedding_battery  = (state.used_battery / state.VEHICLE_BATTERY).unsqueeze(-1)
         state_embedding_time = state.current_time.unsqueeze(-1)
-        return torch.cat((state_embedding_capacity, state_embedding_battery, state_embedding_time), dim=-1)
+        state_visited_customers_raio = state.visited_customers_raio
+        state_remain_feasible_customers_raio = state.remain_feasible_customers_raio
+        return torch.cat((state_embedding_capacity, state_embedding_battery, state_embedding_time, state_visited_customers_raio, state_remain_feasible_customers_raio), dim=-1)
 
 

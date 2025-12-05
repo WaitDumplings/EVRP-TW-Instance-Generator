@@ -64,6 +64,7 @@ class EVRPTWVectorEnv(gym.Env):
     def __init__(self, *args, **kwargs):
 
         # ====== Configuration ======
+        self.terminate = False
         self.config_path = kwargs.get("config_path", None)
         if not self.config_path:
             raise ValueError("config_path to construct env is required!")
@@ -121,6 +122,8 @@ class EVRPTWVectorEnv(gym.Env):
             # capacity scalars are kept for info / logging (can be 1.0 in normalized world)
             "battery_capacity": spaces.Box(low=0, high=np.inf, shape=(1,)),
             "loading_capacity": spaces.Box(low=0, high=np.inf, shape=(1,)),
+            "visited_customers_raio": spaces.Box(low=0, high=1, shape=(self.n_traj, 1)),
+            "remain_feasible_customers_raio": spaces.Box(low=0, high=1, shape=(self.n_traj, 1)),
         }
 
         self.observation_space = spaces.Dict(obs_dict)
@@ -197,7 +200,7 @@ class EVRPTWVectorEnv(gym.Env):
         self.state = self._update_state()
 
         # terminate trajectory when returning to depot after all customers visited
-        self.done = (action == 0) & self.is_all_visited()
+        self.done = (action == 0) & self.is_all_visited() if not self.terminate else np.ones_like(self.done, dtype=bool)
 
         return self.state, self.reward, self.done, self.info
 
@@ -228,6 +231,8 @@ class EVRPTWVectorEnv(gym.Env):
             "service_time": self.service_time,
             "battery_capacity": np.array(self.battery_capacity).reshape(-1),
             "loading_capacity": np.array(self.loading_capacity).reshape(-1),
+            "visited_customers_raio": (self.visited[:, 1:1+self.cus_num]).sum(axis=1, keepdims=True)/self.cus_num,
+            "remain_feasible_customers_raio": ((~self.visited[:, 1:1+self.cus_num]) & (self.mask[:, 1:1+self.cus_num])).sum(axis=1, keepdims=True)/self.cus_num,
         }
         return obs
 
@@ -248,8 +253,16 @@ class EVRPTWVectorEnv(gym.Env):
         cus_start_idx = 1
         rs_start_idx = 1 + self.cus_num
 
+        # False: cannot go, True: can go
         # base: cannot revisit nodes marked visited
         action_mask = ~self.visited
+
+        # Depot & RSs can always be visited
+        action_mask[:, 0] = True
+        action_mask[:, rs_start_idx:] = True
+
+        # cannot visit itself
+        action_mask[np.arange(self.n_traj), self.last] = False
 
         # (2) load feasibility: load + demand <= capacity (1.0)
         load_mask = (self.load[:, None] + self.demands[None, :]) <= self.loading_capacity
@@ -307,6 +320,21 @@ class EVRPTWVectorEnv(gym.Env):
         # only apply FFP on customers
         action_mask[:, cus_start_idx:rs_start_idx] &= FFP_cus_mask
 
+        # customer visited mission complete
+        customer_has_been_visited = self.is_all_visited()
+        action_mask[customer_has_been_visited, 0] = True
+
+        # mission complete: cannot go to any other nodes except stay at depot
+        customer_has_been_visited_and_at_depot = customer_has_been_visited & (self.last == 0)
+        action_mask[customer_has_been_visited_and_at_depot, 1:] = False
+        # print(self.visited)
+        # print(action_mask)
+        # print(self.last)
+        # breakpoint()
+        # print(self.last)
+        # print(action_mask)
+
+
         self.mask = action_mask
         return action_mask
 
@@ -320,7 +348,7 @@ class EVRPTWVectorEnv(gym.Env):
         into the internal normalized representation.
         """
         context = self.dataset.generate_tensors()
-
+        self.context = context
         self.depot_num = context["depot"].shape[0]
         self.cus_num = context["customers"].shape[0]
         self.rs_num = context["charging_stations"].shape[0]
@@ -473,6 +501,16 @@ class EVRPTWVectorEnv(gym.Env):
         elif self.env_mode == "train":
             # TODO: replace with your RL reward shaping
             self.reward = -dist_display
+            if self.terminate:
+                served_cus  = self.visited[:, cus_start_idx:rs_start_idx].sum(axis=1)
+                total_cus   = rs_start_idx - cus_start_idx
+                unserved_cus = total_cus - served_cus
+
+                C = 10.0  # 惩罚系数，你可以之后调
+                terminal_penalty = -C * unserved_cus.astype(np.float32)
+
+                self.reward = self.reward + terminal_penalty * self.done.astype(np.float32)
+
         else:
             raise ValueError(f"Unknown Mode: {self.env_mode}")
 

@@ -71,29 +71,6 @@ def make_env(env_id, seed, cfg={}):
         return env
     return thunk
 
-def evaluate_policy(agent, eval_envs, max_iter = 1000):
-    agent.eval()
-    all_objs = []
-    with torch.no_grad():
-        obs = eval_envs.reset()
-        done = False
-        # 如果是 VecEnv，就要等所有 env 都 done
-        cur_iter = 0
-        while not done_all and cur_iter < max_iter:
-            action, _, _, _, _ = agent.get_action_and_value_cached(obs)
-            obs, reward, done, info = eval_envs.step(action.cpu().numpy())
-            cur_iter += 1
-            # 当某个 env done 时，从 info 里拿该 episode 的 objective
-            for item in info:
-                if "episode" in item:
-                    # item["episode"]["r"]: 回报
-                    # 如果你想要objective，比如 total_distance，就在 env 里加到 info["episode"]["obj"]
-                    all_objs.append(item["episode"]["obj"])  
-
-    # record finished part, finish rate
-    finish_rate = 1.0
-    return np.mean(all_objs), finish_rate
-
 def train(args):
     #########################
     #### Env Definition #####
@@ -186,7 +163,7 @@ def train(args):
                 global_step += 1 * args.num_envs
                 obs[step] = next_obs
                 dones[step] = next_done
-
+                
                 # ALGO LOGIC: action logic
                 with torch.no_grad():
                     action, logprob, _, value, _ = agent.get_action_and_value_cached(
@@ -196,6 +173,10 @@ def train(args):
                     values[step] = value.view(args.num_envs, args.n_traj)
                 actions[step] = action
                 logprobs[step] = logprob.view(args.num_envs, args.n_traj)
+
+                if step == args.num_steps - 1:
+                    envs.update_attr("terminate", True)
+                    
                 next_obs, reward, done, info = envs.step(action.cpu().numpy())
                 rewards[step] = torch.tensor(reward).to(device)
                 next_obs, next_done = next_obs, torch.Tensor(done).to(device)
@@ -218,7 +199,7 @@ def train(args):
                         delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
                     )
                 returns = advantages + values
-
+            breakpoint()
             # flatten the batch
             b_obs = {
                 k: np.concatenate([obs_[k] for obs_ in obs]) for k in envs.single_observation_space
