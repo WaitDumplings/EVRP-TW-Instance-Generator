@@ -1,7 +1,4 @@
-import argparse
 import os
-import random
-import shutil
 import time
 from tqdm import tqdm
 from distutils.util import strtobool
@@ -19,6 +16,8 @@ from evrptw_gen.benchmarks.models.attention_model_wrapper import Agent
 from evrptw_gen.benchmarks.wrappers.recordWrapper import RecordEpisodeStatistics
 from evrptw_gen.benchmarks.wrappers.syncVectorEnvPomo import SyncVectorEnv
 from evrptw_gen.configs.load_config import Config
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 def make_env(env_id, seed, cfg={}):
     def thunk():
@@ -69,7 +68,10 @@ def train(args):
     # 3: for iter: (训练次数 + PPO)
     
     config_iter_number = 1  # 或更多
-    num_updates = 1000
+    num_updates = 2000
+    customer_numbers = 100
+    charging_stations_numbers = 20
+
     for config_iter in range(config_iter_number):
         # 1. 选本轮使用的 config_path 和 n_traj
         # config_path = args.config_path[config_iter]
@@ -79,9 +81,6 @@ def train(args):
         test_traj_num = args.test_agent
 
         # 2. 只在这里创建一套 envs（本 config 共用这一套）
-
-        customer_numbers = 5
-        charging_stations_numbers = 3
         for update_step in tqdm(range(num_updates)):
             envs = SyncVectorEnv(
                 [
@@ -254,8 +253,8 @@ def train(args):
             # A policy to update the customer_numbers and charging_stations_numbers and other env parameters (Curriculum Learning)
             # customer_numbers += 1
             # charging_stations_numbers += 1
-        
-            if (update_step + 1) % 30 == 0:
+            DEBUG_TEST = False
+            if DEBUG_TEST and (update_step + 1) % 200 == 0:
                 # Evaluation Process
                 test_envs = SyncVectorEnv(
                     [
@@ -267,7 +266,7 @@ def train(args):
                         for i in range(args.num_envs)
                     ]
                 )
-
+                
                 # TRY NOT TO MODIFY: start the game
                 agent.eval()
                 test_obs = test_envs.reset()
@@ -277,10 +276,17 @@ def train(args):
                     with torch.no_grad():
                         action, logits = agent(test_obs)
                     # TRY NOT TO MODIFY: execute the game and log data.
-                    test_obs, _, done, test_info = test_envs.step(action.cpu().numpy())
-                    if done.all():
+                    test_obs, _, test_done, test_info = test_envs.step(action.cpu().numpy())
+
+                    for item in test_info:
+                        if "episode" in item.keys():
+                            r.append(item)
+
+                    if test_done.all():
                         break
-                breakpoint()
+                avg_reward = np.mean([item["episode"]["r"] for item in r])
+                print(f"Evaluation over {len(r)} episodes: {avg_reward:.3f}, Step: {update_step+1}")
+
                 test_envs.close()
 
 

@@ -172,6 +172,12 @@ class Agent(nn.Module):
         else:
             x = self.backbone.decode(x, state)
         logits = self.actor(x)
+
+        logits_inf = (logits == -torch.inf)
+        for i in range(logits_inf.shape[0]):
+            for j in range(logits_inf.shape[1]):
+                if logits_inf[i, j, :].all():
+                    breakpoint()
         probs = torch.distributions.Categorical(logits=logits)
         if action is None:
             action = probs.sample()

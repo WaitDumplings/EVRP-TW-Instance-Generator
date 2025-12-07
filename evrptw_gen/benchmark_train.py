@@ -113,13 +113,13 @@ def parse_args():
     parser.add_argument(
         "--num-envs",
         type=int,
-        default=64,
+        default=1,
         help="the number of parallel game environments",
     )
     parser.add_argument(
         "--num-steps",
         type=int,
-        default=40,
+        default=180,
         help="the number of steps to run in each environment per policy rollout",
     )
     parser.add_argument(
@@ -145,7 +145,7 @@ def parse_args():
     parser.add_argument(
         "--num-minibatches",
         type=int,
-        default=4,
+        default=1,
         help="the number of mini-batches",
     )
     parser.add_argument(
@@ -163,7 +163,7 @@ def parse_args():
     parser.add_argument(
         "--n_encode_layers",
         type=int,
-        default=3,
+        default=4,
         help="number of encoder layers",
     )
     parser.add_argument(
@@ -215,7 +215,7 @@ def parse_args():
     parser.add_argument(
         "--n-traj",
         type=int,
-        default=10,
+        default=1,
         help="number of trajectories(players) in a vectorized sub-environment",
     )
     parser.add_argument(

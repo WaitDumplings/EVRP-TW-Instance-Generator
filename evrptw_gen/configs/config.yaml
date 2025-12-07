@@ -1,8 +1,8 @@
 # config.yaml
 # Geometric and Quantity Parameters
 area_size: [[0.0, 100.0], [0.0, 100.0]]     # km
-num_customers: 5
-num_charging_stations: 3
+num_customers: 100
+num_charging_stations: 20
 num_cluster: 5
 instance_type_distribution: {R: 1.0, C: 0.0, RC: 0.0}
 dist_fun: "2-norm"
@@ -98,7 +98,7 @@ servicetime_type_config:
       st_range: [1, 10]
 
 # Random Seed
-rng_seed: 42
+# rng_seed: 42
 
 # Auxiliary Parameters for Clustered and RC Instances
 min_radius_frac_of_R: 0.25
