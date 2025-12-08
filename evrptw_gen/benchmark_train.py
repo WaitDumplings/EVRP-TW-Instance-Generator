@@ -29,6 +29,10 @@ def parse_args():
         help="seed of the experiment",
     )
     parser.add_argument(
+        "--cuda-id", type=int, default=0,
+        help="cuda device id",
+    )
+    parser.add_argument(
         "--torch-deterministic",
         type=lambda x: bool(strtobool(x)),
         default=True,

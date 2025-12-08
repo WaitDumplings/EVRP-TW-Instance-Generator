@@ -3,6 +3,14 @@ import time
 from tqdm import tqdm
 from distutils.util import strtobool
 
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message="WARN: A Box observation space has an unconventional shape*",
+    category=UserWarning,
+)
+
 import gym
 import numpy as np
 import torch
@@ -45,7 +53,7 @@ def train(args):
     #########################
     ### Model Definition ####
     #########################
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = f"cuda:{args.cuda_id}" if torch.cuda.is_available() else "cpu"
     config_iter_number = 10
     agent = Agent(device=device, 
                   name=args.problem, 
@@ -67,9 +75,9 @@ def train(args):
     
     config_iter_number = 1  # 或更多
     num_updates = 1000
-    customer_numbers = 100
-    charging_stations_numbers = 20
-
+    customer_numbers = 20
+    charging_stations_numbers = 5
+    
     for config_iter in range(config_iter_number):
         # 1. 选本轮使用的 config_path 和 n_traj
         # config_path = args.config_path[config_iter]
@@ -80,6 +88,7 @@ def train(args):
 
         # 2. 只在这里创建一套 envs（本 config 共用这一套）
         for update_step in tqdm(range(num_updates)):
+            DEBUG_TEST = True
             envs = SyncVectorEnv(
                 [
                     make_env(
@@ -133,6 +142,21 @@ def train(args):
                     
                 rewards[step] = torch.tensor(reward).to(device)
                 next_obs, next_done = next_obs, torch.Tensor(done).to(device)
+                
+            # if DEBUG_TEST:
+            #     data = actions[:,0,0]
+            #     rollout = ["D"]
+            #     for i in range(len(data)):
+            #         if data[i].item() == 0:
+            #             if rollout[-1] == "D":
+            #                 break
+            #             else:
+            #                 rollout.append("D")
+            #         elif data[i] > customer_numbers:
+            #             rollout.append("R")
+            #         else:
+            #             rollout.append("C" + str(int(data[i].item())))
+            #     print('->'.join(rollout))
 
             ## PPO Logic ##
             # bootstrap value if not done
@@ -249,12 +273,10 @@ def train(args):
             ## Update Next Environment ##
 
             # A policy to update the customer_numbers and charging_stations_numbers and other env parameters (Curriculum Learning)
-            # customer_numbers += 1
-            # charging_stations_numbers += 1
-            DEBUG_TEST = True
             test_num_cus = 100
             test_num_cs = 20
-            if DEBUG_TEST and (update_step + 1) % 10 == 0:
+
+            if DEBUG_TEST and (update_step + 1) % 30 == 0:
                 # Evaluation Process
                 test_envs = SyncVectorEnv(
                     [
@@ -279,7 +301,7 @@ def train(args):
                 record_done = np.zeros((args.num_envs, test_traj_num))
                 record_cs = np.zeros((args.num_envs, test_traj_num))
                 record_action = ['D']
-                for step in range(0, 200):
+                for step in range(0, 500):
                     # ALGO LOGIC: action logic
                     with torch.no_grad():
                         action, logits = agent(test_obs)
@@ -305,9 +327,13 @@ def train(args):
 
                     if test_done.all():
                         break
+
                 avg_reward = np.mean([item["episode"]["r"] for item in r])
+                print("----- Evaluation Result -----")
+                print("Number of Customers:", test_num_cus, "Number of Charging Stations:", test_num_cs)
                 print(f"Evaluation over {len(r)} episodes: {avg_reward:.3f}, Step: {step}, Avg Done Step: {record_done.mean().item():.2f}, #CS visited: {record_cs.mean().item():.2f}")
                 print('->'.join(record_action))
+                print("-----------------------------")
                 test_envs.close()
             envs.close()
 

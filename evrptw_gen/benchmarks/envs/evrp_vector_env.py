@@ -206,10 +206,10 @@ class EVRPTWVectorEnv(gym.Env):
         else:
             self.done = (action == 0) & self.is_all_visited()
 
-        # if not self.terminate:
-        #     bonus = self.cus_num
-        #     self.reward[self.done & ~self.finish] += bonus  # bonus for finishing
-        # self.finish = self.finish | self.done
+        if not self.terminate:
+            bonus = 10.0
+            self.reward[self.done & ~self.finish] += bonus  # bonus for finishing
+        self.finish = self.finish | self.done
 
         if self.terminate:
             self.terminate = False
@@ -560,14 +560,17 @@ class EVRPTWVectorEnv(gym.Env):
         elif self.env_mode == "train":
             # TODO: replace with your RL reward shaping
             self.reward = -dist_display
-            if self.terminate:
-                served_cus  = self.visited[:, cus_start_idx:rs_start_idx].sum(axis=1)
-                total_cus   = rs_start_idx - cus_start_idx
-                unserved_cus = total_cus - served_cus
+            self.reward[go_to_cus] += 1.0  # reward for serving customer
 
-                C = self.cus_num  # 惩罚系数，你可以之后调
-                terminal_penalty = -C * unserved_cus.astype(np.float32)
-                self.reward = self.reward + terminal_penalty
+            if self.terminate:
+                self.reward -= 10.0
+                # served_cus  = self.visited[:, cus_start_idx:rs_start_idx].sum(axis=1)
+                # total_cus   = rs_start_idx - cus_start_idx
+                # unserved_cus = total_cus - served_cus
+
+                # C = self.cus_num  # 惩罚系数，你可以之后调
+                # terminal_penalty = -C * unserved_cus.astype(np.float32)
+                # self.reward = self.reward + terminal_penalty
 
         else:
             raise ValueError(f"Unknown Mode: {self.env_mode}")
