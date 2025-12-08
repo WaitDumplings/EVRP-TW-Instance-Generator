@@ -41,7 +41,7 @@ class Backbone(nn.Module):
 
     def _apply_graph_token(self, embedding, mask):
         """在 [B,N,D] 的 embedding 前面拼一个 [GRAPH] token，并同步更新 mask。"""
-        if self.use_graph_token is None:
+        if not self.use_graph_token:
             return embedding, mask
 
         B = embedding.size(0)
@@ -173,11 +173,11 @@ class Agent(nn.Module):
             x = self.backbone.decode(x, state)
         logits = self.actor(x)
 
-        logits_inf = (logits == -torch.inf)
-        for i in range(logits_inf.shape[0]):
-            for j in range(logits_inf.shape[1]):
-                if logits_inf[i, j, :].all():
-                    breakpoint()
+        # logits_inf = (logits == -torch.inf)
+        # for i in range(logits_inf.shape[0]):
+        #     for j in range(logits_inf.shape[1]):
+        #         if logits_inf[i, j, :].all():
+        #             breakpoint()
         probs = torch.distributions.Categorical(logits=logits)
         if action is None:
             action = probs.sample()

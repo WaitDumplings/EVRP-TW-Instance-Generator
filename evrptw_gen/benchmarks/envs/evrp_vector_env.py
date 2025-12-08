@@ -94,6 +94,7 @@ class EVRPTWVectorEnv(gym.Env):
             )
         self.env_mode = kwargs.get("env_mode", "train")  # "train" or "eval"
         assign_env_config(self, kwargs)
+        # self.snap_shot = {}
 
         # ====== Observation / Action spaces ======
         obs_dict = {
@@ -173,6 +174,7 @@ class EVRPTWVectorEnv(gym.Env):
         self.current_time = np.zeros(self.n_traj, dtype=float)
 
         self.done = np.zeros(self.n_traj, dtype=bool)
+        self.finish = np.zeros(self.n_traj, dtype=bool)
 
         self.state = self._update_state()
         return self.state
@@ -199,7 +201,23 @@ class EVRPTWVectorEnv(gym.Env):
         self.state = self._update_state()
 
         # terminate trajectory when returning to depot after all customers visited
-        self.done = (action == 0) & self.is_all_visited() if not self.terminate else np.ones_like(self.done, dtype=bool)
+        if self.terminate:
+            self.done = np.ones_like(self.done, dtype=bool)
+        else:
+            self.done = (action == 0) & self.is_all_visited()
+
+        # if not self.terminate:
+        #     bonus = self.cus_num
+        #     self.reward[self.done & ~self.finish] += bonus  # bonus for finishing
+        # self.finish = self.finish | self.done
+
+        if self.terminate:
+            self.terminate = False
+        # self.snap_shot['last'] = self.last.copy()
+        # self.snap_shot['battery'] = self.battery.copy()
+        # self.snap_shot['current_time'] = self.current_time.copy()
+        # self.snap_shot['load'] = self.load.copy()
+        # self.snap_shot['visited'] = self.visited.copy()
 
         return self.state, self.reward, self.done, self.info
 
@@ -303,8 +321,8 @@ class EVRPTWVectorEnv(gym.Env):
         time_at_rs = time_after_service_3d + time_cust_to_rs        # (n_traj, n_cus, n_rs+1)
 
         # 3) charging to full then RS/depot -> depot
-        # remaining SoC at RS = (1 - consumed SoC)
-        time_charge_at_rs = (1.0 - battery_at_rs) * self.charging_beta
+        # remaining SoC at RS = battery_at_rs
+        time_charge_at_rs = battery_at_rs * self.charging_beta
         time_charge_at_rs[:, :, 0] = 0.0  # depot 不充电
 
         RS_time_to_depot_3d = self.RS_time_to_depot[None, None, :]  # (1, 1, n_rs+1), normalized
@@ -319,6 +337,24 @@ class EVRPTWVectorEnv(gym.Env):
         # only apply FFP on customers
         action_mask[:, cus_start_idx:rs_start_idx] &= FFP_cus_mask
 
+        # (6) FFP on Charging Stations
+        # if time Cur Node -> RS -> depot is infeasible, mask RS
+        # (self.last, self.battery, self.current_time)
+        time_to_rs = self.travel_time[self.last[:, None], rs_cols]         # (n_traj, n_rs+1)
+        energy_to_rs = self.edge_energy[self.last[:, None], rs_cols]      # (n_traj, n_rs+1)
+        battery_at_rs = self.battery[:, None] + energy_to_rs        # (n_traj, n_rs+1)
+        time_at_rs = self.current_time[:, None] + time_to_rs        # (n_traj, n_rs+1)
+
+        # charging to full
+        time_charge_at_rs = battery_at_rs * self.charging_beta
+        time_charge_at_rs[:, 0] = 0.0  # depot 不充电
+        RS_time_to_depot_2d = self.RS_time_to_depot[None, :]  # (1, n_rs+1), normalized
+        total_finish_time_rs = time_at_rs + time_charge_at_rs + RS_time_to_depot_2d  # normalized
+        rs_time_feasible = total_finish_time_rs <= self.instance_max_time              # <= 1.0
+        rs_battery_feasible = battery_at_rs <= self.battery_capacity
+        rs_feasible = rs_time_feasible & rs_battery_feasible
+        action_mask[:, rs_cols] &= rs_feasible
+
         # customer visited mission complete
         customer_has_been_visited = self.is_all_visited()
         action_mask[customer_has_been_visited, 0] = True
@@ -326,17 +362,30 @@ class EVRPTWVectorEnv(gym.Env):
         # mission complete: cannot go to any other nodes except stay at depot
         customer_has_been_visited_and_at_depot = customer_has_been_visited & (self.last == 0)
         action_mask[customer_has_been_visited_and_at_depot, 1:] = False
-        # print(self.visited)
-        # print(action_mask)
-        # print(self.last)
-        # breakpoint()
-        # print(self.last)
-        # print(action_mask)
 
+        # if action_mask.sum(axis=1).min() == 0:
+        #     print("===== DEBUG INFO =====")
+        #     print("Warning: some trajectory has no feasible actions!")
+        #     idx = np.where(action_mask.sum(axis=1) == 0)
+        #     print(idx, "Current location:", self.last[idx])
+            
+        #     # idx: 29 -> Location: ? -> 113
+        #     breakpoint()
+        #     # load snap_shot
+        #     self.last = self.snap_shot['last'].copy()
+        #     self.battery = self.snap_shot['battery'].copy()
+        #     self.current_time = self.snap_shot['current_time'].copy()
+        #     self.load = self.snap_shot['load'].copy()
+        #     self.visited = self.snap_shot['visited'].copy()
 
+            # self.snap_shot
         self.mask = action_mask
         return action_mask
 
+    def _print_matrix(self, array, idx):
+        for i in range(len(array)):
+            print(array[i][idx], end="\t")
+            
     # ======================================================================
     #  Data generation / normalization
     # ======================================================================
@@ -516,11 +565,9 @@ class EVRPTWVectorEnv(gym.Env):
                 total_cus   = rs_start_idx - cus_start_idx
                 unserved_cus = total_cus - served_cus
 
-                C = 10.0  # 惩罚系数，你可以之后调
+                C = self.cus_num  # 惩罚系数，你可以之后调
                 terminal_penalty = -C * unserved_cus.astype(np.float32)
-
                 self.reward = self.reward + terminal_penalty
-                self.terminate = False
 
         else:
             raise ValueError(f"Unknown Mode: {self.env_mode}")
@@ -549,9 +596,9 @@ class EVRPTWVectorEnv(gym.Env):
 
         # 4) charging at RS (charge to full)
         if go_to_rs.any():
-            # battery = consumed SoC, remaining SoC = 1 - battery
-            remaining_soc = 1.0 - self.battery[go_to_rs]
-            charging_time_norm = remaining_soc * self.charging_beta
+            # battery = consumed SoC after arriving at RS
+            self.battery[go_to_rs] += self.edge_energy[self.last, destination][go_to_rs]
+            charging_time_norm = self.battery[go_to_rs] * self.charging_beta
             self.current_time[go_to_rs] += charging_time_norm
             # after charging, consider "consumed SoC" reset to 0
             self.battery[go_to_rs] = 0.0
@@ -559,7 +606,6 @@ class EVRPTWVectorEnv(gym.Env):
         # -------- Battery update (normalized consumed SoC) --------
         # at depot we assume fully charged, so consumed = 0
         self.battery[go_to_depot] = 0.0
-        self.battery[go_to_rs] = 0.0 # we have fixed it in (4) charging time above
 
         # already handled RS above (set to 0)
         # here we only add travel consumption when going to customers
@@ -568,3 +614,4 @@ class EVRPTWVectorEnv(gym.Env):
         # -------- Visited & last node update --------
         self.visited[np.arange(self.n_traj), destination] = True
         self.last = destination
+

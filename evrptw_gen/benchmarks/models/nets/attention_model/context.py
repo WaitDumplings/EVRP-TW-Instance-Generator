@@ -101,8 +101,8 @@ class VRPContext(PrevNodeContext):
         super(VRPContext, self).__init__(context_dim)
 
     def _state_embedding(self, embeddings, state):
-        state_embedding_capacity = (state.used_capacity / state.VEHICLE_CAPACITY).unsqueeze(-1)
-        state_embedding_battery  = (state.used_battery / state.VEHICLE_BATTERY).unsqueeze(-1)
+        state_embedding_capacity = (state.used_capacity).unsqueeze(-1)
+        state_embedding_battery  = (state.used_battery).unsqueeze(-1)
         state_embedding_time = state.current_time.unsqueeze(-1)
         state_visited_customers_raio = state.visited_customers_raio
         state_remain_feasible_customers_raio = state.remain_feasible_customers_raio

@@ -17,8 +17,6 @@ from evrptw_gen.benchmarks.wrappers.recordWrapper import RecordEpisodeStatistics
 from evrptw_gen.benchmarks.wrappers.syncVectorEnvPomo import SyncVectorEnv
 from evrptw_gen.configs.load_config import Config
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-
 def make_env(env_id, seed, cfg={}):
     def thunk():
         env = gym.make(env_id, **cfg)
@@ -68,7 +66,7 @@ def train(args):
     # 3: for iter: (训练次数 + PPO)
     
     config_iter_number = 1  # 或更多
-    num_updates = 2000
+    num_updates = 1000
     customer_numbers = 100
     charging_stations_numbers = 20
 
@@ -253,15 +251,22 @@ def train(args):
             # A policy to update the customer_numbers and charging_stations_numbers and other env parameters (Curriculum Learning)
             # customer_numbers += 1
             # charging_stations_numbers += 1
-            DEBUG_TEST = False
-            if DEBUG_TEST and (update_step + 1) % 200 == 0:
+            DEBUG_TEST = True
+            test_num_cus = 100
+            test_num_cs = 20
+            if DEBUG_TEST and (update_step + 1) % 10 == 0:
                 # Evaluation Process
                 test_envs = SyncVectorEnv(
                     [
                         make_env(
                             args.env_id,
                             args.seed + i,
-                            cfg={"env_mode": "eval", "eval_mode": "fixed", "config_path": config_path, "n_traj": test_traj_num, "num_customers": 100, "num_charging_stations": 20},
+                            cfg={"env_mode": "eval", 
+                                 "eval_mode": "fixed", 
+                                 "config_path": config_path, 
+                                 "n_traj": test_traj_num, 
+                                 "num_customers": test_num_cus, 
+                                 "num_charging_stations": test_num_cs},
                         )
                         for i in range(args.num_envs)
                     ]
@@ -271,12 +276,28 @@ def train(args):
                 agent.eval()
                 test_obs = test_envs.reset()
                 r = []
+                record_done = np.zeros((args.num_envs, test_traj_num))
+                record_cs = np.zeros((args.num_envs, test_traj_num))
+                record_action = ['D']
                 for step in range(0, 200):
                     # ALGO LOGIC: action logic
                     with torch.no_grad():
                         action, logits = agent(test_obs)
                     # TRY NOT TO MODIFY: execute the game and log data.
                     test_obs, _, test_done, test_info = test_envs.step(action.cpu().numpy())
+                    finish_idx = (record_done == 0) & (test_done == True)
+                    record_done[finish_idx] = step + 1
+                    record_cs[action.cpu().numpy()> test_num_cus] += 1  # action > 100 means go to CS
+                    if DEBUG_TEST:
+                        if action[0][0] == 0:
+                            if record_action[-1] == "D":
+                                DEBUG_TEST = False
+                            else:
+                                record_action.append("D")
+                        elif action[0][0] > test_num_cus:
+                            record_action.append("R")
+                        else:
+                            record_action.append("C" + str(action[0][0].item()))
 
                     for item in test_info:
                         if "episode" in item.keys():
@@ -285,9 +306,10 @@ def train(args):
                     if test_done.all():
                         break
                 avg_reward = np.mean([item["episode"]["r"] for item in r])
-                print(f"Evaluation over {len(r)} episodes: {avg_reward:.3f}, Step: {update_step+1}")
-
+                print(f"Evaluation over {len(r)} episodes: {avg_reward:.3f}, Step: {step}, Avg Done Step: {record_done.mean().item():.2f}, #CS visited: {record_cs.mean().item():.2f}")
+                print('->'.join(record_action))
                 test_envs.close()
+            envs.close()
 
 
 
