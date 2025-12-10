@@ -178,4 +178,5 @@ cplex.log
 *.mps
 *.sol
 
-result.txt
+*.txt
+*.sh

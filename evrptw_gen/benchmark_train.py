@@ -5,7 +5,7 @@ import argparse
 from distutils.util import strtobool
 
 # 1) 设定 GPU 可见性（可根据需要调整/删除）
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 # 2) 从 benchmarks/train.py 导入 train 函数
 # 方法一：包内绝对导入（推荐，清晰）
@@ -117,7 +117,7 @@ def parse_args():
     parser.add_argument(
         "--num-envs",
         type=int,
-        default=48,
+        default=96,
         help="the number of parallel game environments",
     )
     parser.add_argument(
@@ -149,7 +149,7 @@ def parse_args():
     parser.add_argument(
         "--num-minibatches",
         type=int,
-        default=2,
+        default=8,
         help="the number of mini-batches",
     )
     parser.add_argument(

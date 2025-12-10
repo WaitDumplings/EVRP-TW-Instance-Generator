@@ -75,8 +75,9 @@ def train(args):
     
     config_iter_number = 1  # 或更多
     num_updates = 1000
-    customer_numbers = 20
-    charging_stations_numbers = 5
+    customer_numbers = 100
+    charging_stations_numbers = 20
+    # num_updates = args.total_timesteps // args.batch_size
     
     for config_iter in range(config_iter_number):
         # 1. 选本轮使用的 config_path 和 n_traj
@@ -85,7 +86,6 @@ def train(args):
         config_path = args.config_path
         n_traj_num = args.n_traj
         test_traj_num = args.test_agent
-
         # 2. 只在这里创建一套 envs（本 config 共用这一套）
         for update_step in tqdm(range(num_updates)):
             DEBUG_TEST = True
@@ -106,25 +106,28 @@ def train(args):
             rewards = torch.zeros((args.num_steps, args.num_envs, args.n_traj)).to(device)
             dones = torch.zeros((args.num_steps, args.num_envs, args.n_traj)).to(device)
             values = torch.zeros((args.num_steps, args.num_envs, args.n_traj)).to(device)
+            valid_masks = torch.zeros((args.num_steps, args.num_envs, args.n_traj)).to(device)
 
             # TRY NOT TO MODIFY: start the game
             global_step = 0
-            next_done = torch.zeros(args.num_envs, args.n_traj).to(device)
-            num_updates = args.total_timesteps // args.batch_size
-
             agent.train()
             next_obs = envs.reset()
 
             encoder_state = agent.backbone.encode(next_obs)
             next_done = torch.zeros(args.num_envs, args.n_traj).to(device)
+            alive = torch.ones(args.num_envs, args.n_traj, dtype=torch.bool, device=device)
+
             r = []
 
             ## Main Logic ##
+            cur_a = []
             for step in range(args.num_steps):
                 global_step += 1 * args.num_envs
                 obs[step] = next_obs
                 dones[step] = next_done
-                
+
+                valid_masks[step] = alive
+
                 # ALGO LOGIC: action logic
                 with torch.no_grad():
                     action, logprob, _, value, _ = agent.get_action_and_value_cached(
@@ -135,29 +138,18 @@ def train(args):
                 actions[step] = action
                 logprobs[step] = logprob.view(args.num_envs, args.n_traj)
 
+                cur_a.append(action[0][0].item())
                 if step == args.num_steps - 1:
                     envs.update_attr("terminate", True) 
                 
                 next_obs, reward, done, info = envs.step(action.cpu().numpy())
-                    
-                rewards[step] = torch.tensor(reward).to(device)
-                next_obs, next_done = next_obs, torch.Tensor(done).to(device)
-                
-            # if DEBUG_TEST:
-            #     data = actions[:,0,0]
-            #     rollout = ["D"]
-            #     for i in range(len(data)):
-            #         if data[i].item() == 0:
-            #             if rollout[-1] == "D":
-            #                 break
-            #             else:
-            #                 rollout.append("D")
-            #         elif data[i] > customer_numbers:
-            #             rollout.append("R")
-            #         else:
-            #             rollout.append("C" + str(int(data[i].item())))
-            #     print('->'.join(rollout))
 
+                rewards[step] = torch.tensor(reward, device=device)
+
+                done_tensor = torch.tensor(done, device=device, dtype=torch.bool)
+                next_done = done_tensor.float()
+                alive = alive & (~done_tensor)
+            print("Current Actions:", cur_a)
             ## PPO Logic ##
             # bootstrap value if not done
             with torch.no_grad():
@@ -189,6 +181,7 @@ def train(args):
             b_advantages = advantages.reshape(-1, args.n_traj).detach()
             b_returns = returns.reshape(-1, args.n_traj)
             b_values = values.reshape(-1, args.n_traj)
+            b_valid_masks = valid_masks.reshape(-1, args.n_traj).bool()
 
             # Optimizing the policy and value network
             # args.num_minibatches -> decide the mini-batch size: smaller num_minibatches -> larger mini-batch size (large GPU RAM)
@@ -199,10 +192,19 @@ def train(args):
 
             clipfracs = []
 
+            # b_advantages 存在bias
+            # if args.norm_adv:
+            #     b_advantages = (b_advantages - b_advantages.mean()) / (
+            #         b_advantages.std() + 1e-8
+            #     )
             if args.norm_adv:
-                b_advantages = (b_advantages - b_advantages.mean()) / (
-                    b_advantages.std() + 1e-8
-                )
+                valid_adv = b_advantages[b_valid_masks]          # 只取有效样本
+                adv_mean = valid_adv.mean()
+                adv_std = valid_adv.std() + 1e-8
+
+                b_advantages = (b_advantages - adv_mean) / adv_std
+                # padding 的位置不参与优化，直接置 0
+                b_advantages = b_advantages * b_valid_masks
 
             for epoch in range(args.update_epochs):
                 np.random.shuffle(envinds)
@@ -218,49 +220,56 @@ def train(args):
                     # Get mini batch of each trajactory
                     encoder_state = agent.backbone.encode(cur_obs)
 
-                    # x =  {k: v[mb_inds] for k, v in b_obs.items()}, action = b_actions, state= (embedding[r_inds, :] for embedding in encoder_state)
                     _, newlogprob, entropy, newvalue, _ = agent.get_action_and_value_cached(
                         {k: v[mb_inds] for k, v in b_obs.items()},
                         b_actions.long()[mb_inds],
                         (embedding[r_inds, :] for embedding in encoder_state),
                     )
-                    # _, newlogprob, entropy, newvalue = agent.get_action_and_value({k:v[mb_inds] for k,v in b_obs.items()}, b_actions.long()[mb_inds])
                     logratio = newlogprob - b_logprobs[mb_inds]
                     ratio = logratio.exp()
 
                     with torch.no_grad():
-                        # calculate approx_kl http://joschu.net/blog/kl-approx.html
                         old_approx_kl = (-logratio).mean()
                         approx_kl = ((ratio - 1) - logratio).mean()
                         clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean().item()]
 
-                    mb_advantages = b_advantages[mb_inds]
-                    # if args.norm_adv:
-                    #     mb_advantages = (mb_advantages - mb_advantages.mean()) / (
-                    #         mb_advantages.std() + 1e-8
-                    #     )
+                    mb_advantages = b_advantages[mb_inds]          # [Mb, n_traj]
+                    mb_returns    = b_returns[mb_inds]
+                    mb_values     = b_values[mb_inds]
+                    mb_valid      = b_valid_masks[mb_inds]         # [Mb, n_traj] bool
 
-                    # Policy loss
+                    # 如果极端情况：这个 mini-batch 里全是 padding，直接跳过（可选）
+                    valid_count = mb_valid.sum()
+                    if valid_count == 0:
+                        continue
+                    valid_count = valid_count.float()
+
+                    # ---------- Policy loss（只在 valid 上平均） ----------
                     pg_loss1 = -mb_advantages * ratio
                     pg_loss2 = -mb_advantages * torch.clamp(
                         ratio, 1 - args.clip_coef, 1 + args.clip_coef
                     )
-                    pg_loss = torch.max(pg_loss1, pg_loss2).mean()
-                    # Value loss
+                    pg_loss_all = torch.max(pg_loss1, pg_loss2)
+
+                    # mask 掉 padding
+                    pg_loss = (pg_loss_all * mb_valid).sum() / valid_count
+
+                    # ---------- Value loss（同样用 mask） ----------
                     newvalue = newvalue.view(-1, args.n_traj)
                     if args.clip_vloss:
-                        v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
-                        v_clipped = b_values[mb_inds] + torch.clamp(
-                            newvalue - b_values[mb_inds],
+                        v_loss_unclipped = (newvalue - mb_returns) ** 2
+                        v_clipped = mb_values + torch.clamp(
+                            newvalue - mb_values,
                             -args.clip_coef,
                             args.clip_coef,
                         )
-                        v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
+                        v_loss_clipped = (v_clipped - mb_returns) ** 2
                         v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-                        v_loss = 0.5 * v_loss_max.mean()
+                        v_loss = 0.5 * (v_loss_max * mb_valid).sum() / valid_count
                     else:
-                        v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
+                        v_loss = 0.5 * (((newvalue - mb_returns) ** 2) * mb_valid).sum() / valid_count
 
+                    # entropy 你可以直接用 mean（它是当前 policy 的探索程度，本身和 padding 没太大关系）
                     entropy_loss = entropy.mean()
                     loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
 
@@ -335,10 +344,8 @@ def train(args):
                 print('->'.join(record_action))
                 print("-----------------------------")
                 test_envs.close()
+                return None
             envs.close()
-
-
-
 
 
 
