@@ -94,6 +94,10 @@ class EVRPTWVectorEnv(gym.Env):
             )
         self.env_mode = kwargs.get("env_mode", "train")  # "train" or "eval"
         assign_env_config(self, kwargs)
+        self.gamma = kwargs.get("gamma", 0.99)
+        self.alpha = kwargs.get("alpha", 0.1)
+        self.lambda_fail = kwargs.get("lambda_fail", 5.0)
+        self.success_bonus = kwargs.get("success_bonus", 0.0)
         # self.snap_shot = {}
 
         # ====== Observation / Action spaces ======
@@ -202,22 +206,44 @@ class EVRPTWVectorEnv(gym.Env):
 
         # terminate trajectory when returning to depot after all customers visited
         if self.terminate:
+            # 强制终止：所有 traj 都结束
             self.done = np.ones_like(self.done, dtype=bool)
         else:
+            # 自然终止：回到 depot 且所有 customer 已访问
             self.done = (action == 0) & self.is_all_visited()
 
-        if not self.terminate:
-            bonus = 10.0
-            self.reward[self.done & ~self.finish] += bonus  # bonus for finishing
+        # ----- Lagrangian-style 成功/失败奖励，只在刚刚结束的 traj 上加 -----
+        all_visited = self.is_all_visited()                 # (n_traj,)
+
+        # 哪些轨迹是在当前 step 才刚刚结束（避免重复加）
+        new_done = self.done & (~self.finish)               # (n_traj,)
+
+        # 成功定义：
+        # - 自然终止：done 本身就表示成功
+        # - 强制终止：只有 all_visited 才算成功，否则是失败
+        if self.terminate:
+            success = all_visited & (self.last == 0)
+        else:
+            success = self.done
+
+        # 初始化 terminal reward
+        r_lag = np.zeros_like(self.reward, dtype=np.float32)
+
+        # 成功 bonus（通常可以设 0 或一个比较小的值）
+        r_lag[new_done & success] += self.success_bonus
+
+        # 失败 penalty：使用 lambda_fail
+        r_lag[new_done & (~success)] -= self.lambda_fail
+
+        # 累加到当前 step 的 reward 上
+        self.reward = self.reward + r_lag
+
+        # 更新 finish 标记（已经终结过的不再加第二次）
         self.finish = self.finish | self.done
 
+        # reset terminate 标记，供下一次 episode 使用
         if self.terminate:
             self.terminate = False
-        # self.snap_shot['last'] = self.last.copy()
-        # self.snap_shot['battery'] = self.battery.copy()
-        # self.snap_shot['current_time'] = self.current_time.copy()
-        # self.snap_shot['load'] = self.load.copy()
-        # self.snap_shot['visited'] = self.visited.copy()
 
         return self.state, self.reward, self.done, self.info
 
@@ -558,19 +584,20 @@ class EVRPTWVectorEnv(gym.Env):
         if self.env_mode == "eval":
             self.reward = -dist_display
         elif self.env_mode == "train":
-            # TODO: replace with your RL reward shaping
-            self.reward = -dist_display
-            self.reward[go_to_cus] += 1.0  # reward for serving customer
+            # 1) objevtive: negative travel distance
+            reward = -dist_display.astype(np.float32)
 
-            if self.terminate:
-                self.reward -= 10.0
-                # served_cus  = self.visited[:, cus_start_idx:rs_start_idx].sum(axis=1)
-                # total_cus   = rs_start_idx - cus_start_idx
-                # unserved_cus = total_cus - served_cus
+            # 2) potential-based shaping: Phi(s) = alpha * N_served(s)
+            prev_served_cus = self.visited[:, cus_start_idx:rs_start_idx].sum(axis=1).astype(np.float32)
+            next_served_cus = prev_served_cus + go_to_cus.astype(np.float32)
 
-                # C = self.cus_num  # 惩罚系数，你可以之后调
-                # terminal_penalty = -C * unserved_cus.astype(np.float32)
-                # self.reward = self.reward + terminal_penalty
+            phi_s  = self.alpha * prev_served_cus
+            phi_sp = self.alpha * next_served_cus
+
+            # gamma*Phi(s') - Phi(s)
+            reward += self.gamma * phi_sp - phi_s
+
+            self.reward = reward
 
         else:
             raise ValueError(f"Unknown Mode: {self.env_mode}")

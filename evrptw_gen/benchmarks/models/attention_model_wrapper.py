@@ -93,6 +93,7 @@ class Backbone(nn.Module):
         logits, glimpse = self.decoder.advance(cached_embeddings, state)
         return logits, glimpse
 
+    
 class Actor(nn.Module):
     def __init__(self):
         super(Actor, self).__init__()

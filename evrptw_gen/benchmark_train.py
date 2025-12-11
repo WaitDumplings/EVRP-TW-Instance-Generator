@@ -248,6 +248,10 @@ def parse_args():
         default=1.1,
         help="temperature when sampling",
     )
+    parser.add_argument("--lambda-fail-init", type=float, default=5.0)
+    parser.add_argument("--target-success", type=float, default=0.99)
+    parser.add_argument("--lambda-lr", type=float, default=1.0)
+    parser.add_argument("--lambda-max", type=float, default=50.0)
     # config_path 建议用相对当前文件的绝对路径，避免 cwd 不一致的问题
     parser.add_argument(
         "--config_path",

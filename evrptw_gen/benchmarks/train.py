@@ -50,6 +50,12 @@ def train(args):
     # Uncomment for debugging
     # breakpoint()
 
+    # ===== 新增：Lagrangian penalty 的参数 =====
+    lambda_fail = args.lambda_fail_init      # 比如 5.0
+    target_success = args.target_success     # 比如 0.99
+    lambda_lr = args.lambda_lr               # 对偶更新步长，比如 1.0
+    lambda_max = args.lambda_max             # 上界，比如 50.0
+
     #########################
     ### Model Definition ####
     #########################
@@ -94,7 +100,12 @@ def train(args):
                     make_env(
                         args.env_id,
                         args.seed + i,
-                        cfg={"config_path": config_path, "n_traj": n_traj_num, "num_customers": customer_numbers, "num_charging_stations": charging_stations_numbers},
+                        cfg={"config_path": config_path, 
+                             "n_traj": n_traj_num, 
+                             "num_customers": customer_numbers, 
+                             "num_charging_stations": charging_stations_numbers,
+                             "gamma": args.gamma,
+                             "lambda_fail": lambda_fail,},
                     )
                     for i in range(args.num_envs)
                 ]
@@ -149,7 +160,38 @@ def train(args):
                 done_tensor = torch.tensor(done, device=device, dtype=torch.bool)
                 next_done = done_tensor.float()
                 alive = alive & (~done_tensor)
-            print("Current Actions:", cur_a)
+
+            visu_actions = actions.reshape((args.num_steps, -1)).cpu().numpy().copy()
+            visu_actions[visu_actions == 0] = 101      # depot 标成 >100
+            visu_actions[visu_actions < 101] = 1       # 所有 customers -> 1
+            visu_actions[visu_actions >= 101] = 0      # depot + RS -> 0
+
+            cus_count_per_traj = visu_actions.sum(axis=0)    # [num_envs * n_traj]
+            finish_flags = (cus_count_per_traj == customer_numbers)
+            success_rate = finish_flags.mean()
+            fail_rate = 1.0 - success_rate
+
+            # epoch vs success_rate；
+            # epoch vs lambda_fail；
+            # epoch vs 平均路径长度（只在 success episode 上统计）。
+
+            print("------------------ Training Record ------------------")
+            print(f"Epoch: {update_step}/{num_updates}")
+            print(f"Avg Customer Visits: {cus_count_per_traj.mean():.2f}")
+            print(f"Finish Rate: {finish_flags.sum()}/{finish_flags.size} = {success_rate:.3f}")
+            print(f"Current lambda_fail: {lambda_fail:.3f}")
+            print("----------------------------------------------------")
+
+            target_fail = 1.0 - target_success
+            lambda_fail = max(
+                0.0,
+                min(
+                    lambda_max,
+                    lambda_fail + lambda_lr * (fail_rate - target_fail),
+                ),
+            )
+
+
             ## PPO Logic ##
             # bootstrap value if not done
             with torch.no_grad():
@@ -344,7 +386,6 @@ def train(args):
                 print('->'.join(record_action))
                 print("-----------------------------")
                 test_envs.close()
-                return None
             envs.close()
 
 
