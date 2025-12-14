@@ -3,7 +3,7 @@ import numpy as np
 from gym import spaces
 
 from evrptw_gen.generator import InstanceGenerator
-
+from evrptw_gen.benchmarks.envs.evrptw_data import EVRPTWDataset
 
 def assign_env_config(self, kwargs):
     """
@@ -62,6 +62,8 @@ class EVRPTWVectorEnv(gym.Env):
     metadata = {"render.modes": []}
 
     def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
 
         # ====== Configuration ======
         self.terminate = False
@@ -95,9 +97,9 @@ class EVRPTWVectorEnv(gym.Env):
         self.env_mode = kwargs.get("env_mode", "train")  # "train" or "eval"
         assign_env_config(self, kwargs)
         self.gamma = kwargs.get("gamma", 0.99)
-        self.alpha = kwargs.get("alpha", 0.1)
+        self.alpha = kwargs.get("alpha", 1.0)
         self.lambda_fail = kwargs.get("lambda_fail", 5.0)
-        self.success_bonus = kwargs.get("success_bonus", 0.0)
+        self.success_bonus = kwargs.get("success_bonus", 0.01)
         # self.snap_shot = {}
 
         # ====== Observation / Action spaces ======
@@ -200,52 +202,39 @@ class EVRPTWVectorEnv(gym.Env):
     # ======================================================================
 
     def _STEP(self, action):
-        self._go_to(action)  # Go to node 'action', update reward & dynamic states
+        self._go_to(action)
         self.num_steps += 1
         self.state = self._update_state()
 
-        # terminate trajectory when returning to depot after all customers visited
         if self.terminate:
-            # 强制终止：所有 traj 都结束
             self.done = np.ones_like(self.done, dtype=bool)
         else:
-            # 自然终止：回到 depot 且所有 customer 已访问
             self.done = (action == 0) & self.is_all_visited()
 
-        # ----- Lagrangian-style 成功/失败奖励，只在刚刚结束的 traj 上加 -----
-        all_visited = self.is_all_visited()                 # (n_traj,)
+        if self.env_mode == "train":
+            all_visited = self.is_all_visited()
+            new_done = self.done & (~self.finish)
+            if self.terminate:
+                success = all_visited & (self.last == 0)
+            else:
+                success = self.done
 
-        # 哪些轨迹是在当前 step 才刚刚结束（避免重复加）
-        new_done = self.done & (~self.finish)               # (n_traj,)
+            r_lag = np.zeros_like(self.reward, dtype=np.float32)
+            r_lag[new_done & success] += self.success_bonus
 
-        # 成功定义：
-        # - 自然终止：done 本身就表示成功
-        # - 强制终止：只有 all_visited 才算成功，否则是失败
-        if self.terminate:
-            success = all_visited & (self.last == 0)
-        else:
-            success = self.done
+            fail_mask = new_done & (~success)
+            if np.any(fail_mask):
+                served_ratio = self.visited[:, 1:1+self.cus_num].sum(axis=1).astype(np.float32) / float(self.cus_num)
+                unserved_ratio = 1.0 - served_ratio
+                r_lag[fail_mask] -= self.lambda_fail * unserved_ratio[fail_mask]
 
-        # 初始化 terminal reward
-        r_lag = np.zeros_like(self.reward, dtype=np.float32)
+            self.reward = self.reward + r_lag
 
-        # 成功 bonus（通常可以设 0 或一个比较小的值）
-        r_lag[new_done & success] += self.success_bonus
-
-        # 失败 penalty：使用 lambda_fail
-        r_lag[new_done & (~success)] -= self.lambda_fail
-
-        # 累加到当前 step 的 reward 上
-        self.reward = self.reward + r_lag
-
-        # 更新 finish 标记（已经终结过的不再加第二次）
         self.finish = self.finish | self.done
-
-        # reset terminate 标记，供下一次 episode 使用
         if self.terminate:
             self.terminate = False
-
         return self.state, self.reward, self.done, self.info
+
 
     def is_all_visited(self):
         """
@@ -429,23 +418,29 @@ class EVRPTWVectorEnv(gym.Env):
 
         self._normalizations(context)
 
-    def _eval_data_generate(self, mode):
+    def _eval_data_generate(self, mode, **kwargs):
         """
         TODO: implement evaluation data generation if needed.
         """
         if mode == "fixed":
-            context = self.dataset.generate_tensors()
-            self.context = context
-            self.depot_num = context["depot"].shape[0]
-            self.cus_num = context["customers"].shape[0]
-            self.rs_num = context["charging_stations"].shape[0]
+            context = self.dataset.generate_tensors(format = "tensor")
+        elif mode == "solomon":
+            if "ins_index" not in self.kwargs:
+                raise ValueError("Please provide 'ins_index' for solomon eval mode!")
 
-            self._normalizations(context)
-        elif mode == "solomon_txt":
-            raise NotImplementedError("Not Implemented Yet!")
+            index = self.kwargs["ins_index"]
+            eval_data_path = self.kwargs.get("eval_data_path", "./eval_data/")
+            eval_dataset = EVRPTWDataset(eval_data_path)
+            context = eval_dataset[index]
         else:
             raise ValueError(f"Unknown eval mode: {mode}")
 
+        self.context = context
+        self.depot_num = context["depot"].shape[0]
+        self.cus_num = context["customers"].shape[0]
+        self.rs_num = context["charging_stations"].shape[0]
+
+        self._normalizations(context)
     def _normalizations(self, context):
         """
         Normalize all static quantities:

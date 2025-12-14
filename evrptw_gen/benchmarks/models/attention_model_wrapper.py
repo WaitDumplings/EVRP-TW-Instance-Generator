@@ -183,6 +183,10 @@ class Agent(nn.Module):
         if action is None:
             action = probs.sample()
 
+        # cus_logits = logits[:, :, 1:101].mean().item()
+        # cs_logits = logits[:, :, 101:].mean().item()
+        # print(f"cus_logits: {cus_logits:.4f}, cs_logits: {cs_logits:.4f}")
+
         # value_state = self.critic(x)
         return action, probs.log_prob(action), probs.entropy(), self.critic(x), state
 

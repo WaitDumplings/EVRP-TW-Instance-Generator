@@ -37,11 +37,11 @@ from .utils.energy_consumption_model import consumption_model
 class InstanceGenerator:
     def __init__(self, config_path: str, **kwargs):
         self.config = Config(config_path)
-        self.config.data.update({
-            k: v
-            for k, v in kwargs['kwargs'].items()
-            if k in self.config.data
-        })
+        # self.config.data.update({
+        #     k: v
+        #     for k, v in kwargs['kwargs'].items()
+        #     if k in self.config.data
+        # })
 
         self.save_path: Optional[str] = kwargs.get("save_path")
         self.num_instances: int = int(kwargs.get("num_instances", 100))
@@ -138,7 +138,7 @@ class InstanceGenerator:
                     copy_env[raw_env_feature] = round(copy_env[raw_env_feature], 4)
         return copy_env
 
-    def generate(self) -> List[Dict]:
+    def generate(self, save_template = "solomon") -> List[Dict]:
         instances = []
         for _ in range(self.num_instances):
             env = self._add_perturb(self.env, self.perturb_dict) if self.add_perturb else dict(self.env)
@@ -147,16 +147,16 @@ class InstanceGenerator:
 
         if self.save_path:
             # save_instance_npz(inst, self.save_path)  # IO in io/saving.py
-            save_instances(instances, self.save_path, template='solomon')
+            save_instances(instances, self.save_path, template= save_template)
             if self.plot_instance:
                 Instance_save_path = os.path.join(self.save_path, 'plot_instances')
                 plot_instance(instances, Instance_save_path)
         return instances
 
-    def generate_tensors(self, env = None, args = None):
+    def generate_tensors(self, env = None, format= 'tensor', **kargs):
         if env == None:
             env = self.env
-        context = self._generate_one_instance(env, format = "tensor")
+        context = self._generate_one_instance(env, format = format)
         return context
 
     def _update_envs(self, args):

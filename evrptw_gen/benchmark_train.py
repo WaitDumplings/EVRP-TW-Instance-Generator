@@ -105,7 +105,7 @@ def parse_args():
     parser.add_argument(
         "--learning-rate",
         type=float,
-        default=1e-4,
+        default=3e-5,
         help="the learning rate of the optimizer",
     )
     parser.add_argument(
@@ -143,7 +143,7 @@ def parse_args():
     parser.add_argument(
         "--gae-lambda",
         type=float,
-        default=0.98,
+        default=0.95,
         help="the lambda for the general advantage estimation",
     )
     parser.add_argument(
@@ -219,7 +219,7 @@ def parse_args():
     parser.add_argument(
         "--n-traj",
         type=int,
-        default=32,
+        default=64,
         help="number of trajectories(players) in a vectorized sub-environment",
     )
     parser.add_argument(
@@ -249,10 +249,14 @@ def parse_args():
         help="temperature when sampling",
     )
     parser.add_argument("--lambda-fail-init", type=float, default=5.0)
-    parser.add_argument("--target-success", type=float, default=0.99)
+    parser.add_argument("--target-success", type=float, default=0.80)
     parser.add_argument("--lambda-lr", type=float, default=1.0)
-    parser.add_argument("--lambda-max", type=float, default=50.0)
-    # config_path 建议用相对当前文件的绝对路径，避免 cwd 不一致的问题
+    parser.add_argument("--lambda-max", type=float, default=20.0)
+    parser.add_argument("--lambda_lr_up", type=float, default=0.5,help="dual ascent step size when fail_rate > target_fail (constraint violated)")
+    parser.add_argument("--lambda_lr_down", type=float, default=2.0, help="dual descent step size when fail_rate < target_fail (constraint over-satisfied)")
+    parser.add_argument("--lambda_tolerance", type=float, default=0.05, help="tolerance band around target_fail where lambda is not updated")
+    parser.add_argument("--eval_method", type=str, default="solomon", help="evaluation method: greedy or sampling [fixed / solomon]")
+    parser.add_argument("--eval_data_path", type=str, default="./eval_data/evrptw_100C_20R.pkl", help="path to evaluation data when eval_env_mode is solomon_txt")
     parser.add_argument(
         "--config_path",
         type=str,
@@ -261,8 +265,6 @@ def parse_args():
     )
 
     args = parser.parse_args()
-    args.batch_size = int(args.num_envs * args.num_steps)
-    args.minibatch_size = int(args.batch_size // args.num_minibatches)
     # fmt: on
     return args
 

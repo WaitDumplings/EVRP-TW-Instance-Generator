@@ -107,6 +107,23 @@ def save_instances(instances, save_path, template='solomon'):
 
             print(f"✅ Saved: {save_name}")
 
+    elif template == 'pickle':
+        def check_extension(filename):
+            if os.path.splitext(filename)[1] != ".pkl":
+                return filename + ".pkl"
+            return filename
+        import pickle
+        cus_scale = instances[0]['env']['num_customers']
+        rs_scale = instances[0]['env']['num_charging_stations']
+        filename = "evrptw_{}C_{}R.pkl".format(cus_scale, rs_scale)
+        filedir = os.path.join(save_path, filename)
+
+        if not os.path.isdir(save_path):
+            os.makedirs(save_path)
+
+        with open(check_extension(filedir), 'wb') as f:
+            pickle.dump(instances, f, pickle.HIGHEST_PROTOCOL)
+
 
 def plot_instance(instances, save_path):
     os.makedirs(save_path, exist_ok=True)
