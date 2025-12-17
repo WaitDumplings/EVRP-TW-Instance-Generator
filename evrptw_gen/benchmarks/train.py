@@ -103,7 +103,7 @@ def train(args):
     eval_method = args.eval_method
     test_envs = None
     config_iter_number = 1  # 或更多
-    num_updates = 1000
+    num_updates = 10000
     # num_updates = args.total_timesteps // args.batch_size
     num_steps = args.num_steps
     num_envs = args.num_envs
@@ -126,9 +126,6 @@ def train(args):
         # 2. 只在这里创建一套 envs（本 config 共用这一套）
         for update_step in tqdm(range(num_updates)):
             # customer_numbers, charging_stations_numbers, num_steps, num_envs = curriculum_learning_setting(update_step)
-            
-            args.batch_size = int(num_envs * num_steps)
-            args.minibatch_size = int(args.batch_size // args.num_minibatches)
             DEBUG_TEST = True
             envs = SyncVectorEnv(
                 [
@@ -140,12 +137,11 @@ def train(args):
                              "num_customers": customer_numbers, 
                              "num_charging_stations": charging_stations_numbers,
                              "gamma": args.gamma,
-                             "lambda_fail": lambda_fail,},
+                             "lambda_fail": lambda_fail},
                     )
                     for i in range(num_envs)
                 ]
             )
-
             obs = [None] * num_steps
             actions = torch.zeros((num_steps, num_envs) + envs.single_action_space.shape).to(device)
             logprobs = torch.zeros((num_steps, num_envs, args.n_traj)).to(device)
@@ -165,6 +161,8 @@ def train(args):
             r = []
 
             ## Main Logic ##
+            import time
+            t0 = time.time()
             for step in range(num_steps):
                 global_step += 1 * num_envs
                 obs[step] = next_obs
@@ -184,15 +182,32 @@ def train(args):
 
                 if step == num_steps - 1:
                     envs.update_attr("terminate", True) 
-                next_obs, reward, done, info = envs.step(action.cpu().numpy())
 
+                next_obs, reward, done, info = envs.step(action.cpu().numpy())
                 rewards[step] = torch.tensor(reward, device=device)
 
                 done_tensor = torch.tensor(done, device=device, dtype=torch.bool)
                 next_done = done_tensor.float()
                 alive = alive & (~done_tensor)
+                valid_step = step + 1
+                if done.all():
+                    break
+            
+            # ReFormat
+            obs = obs[:valid_step]
+            actions = actions[:valid_step]
+            logprobs = logprobs[:valid_step]
+            rewards = rewards[:valid_step]
+            dones = dones[:valid_step]
+            values = values[:valid_step]
+            valid_masks = valid_masks[:valid_step]
+            t1 = time.time()
+            print("{} steps cost {:.4f} s".format(step, t1 - t0))
 
-            visu_actions = actions.reshape((num_steps, -1)).cpu().numpy().copy()
+            args.batch_size = int(num_envs * valid_step)
+            args.minibatch_size = int(args.batch_size // args.num_minibatches)
+
+            visu_actions = actions.reshape((valid_step, -1)).cpu().numpy().copy()
             visu_actions[visu_actions == 0] = customer_numbers + 1      # depot 标成 > customer_numbers
             visu_actions[visu_actions < 1 + customer_numbers] = 1       # 所有 customers -> 1
             visu_actions[visu_actions >= 1 + customer_numbers] = 0      # depot + RS -> 0
@@ -228,8 +243,8 @@ def train(args):
                 next_value = agent.get_value_cached(next_obs, encoder_state).squeeze(-1)  # B x T
                 advantages = torch.zeros_like(rewards).to(device)  # steps x B x T
                 lastgaelam = torch.zeros(num_envs, args.n_traj).to(device)  # B x T
-                for t in reversed(range(num_steps)):
-                    if t == num_steps - 1:
+                for t in reversed(range(valid_step)):
+                    if t == valid_step - 1:
                         nextnonterminal = 1.0 - next_done  # next_done: B
                         nextvalues = next_value  # B x T
                     else:
@@ -260,7 +275,7 @@ def train(args):
             assert num_envs % args.num_minibatches == 0
             envsperbatch = num_envs // args.num_minibatches
             envinds = np.arange(num_envs)
-            flatinds = np.arange(args.batch_size).reshape(num_steps, num_envs)
+            flatinds = np.arange(args.batch_size).reshape(valid_step, num_envs)
 
             clipfracs = []
 
@@ -279,7 +294,7 @@ def train(args):
 
                     mbenvinds = envinds[start:end]  # mini batch env id
                     mb_inds = flatinds[:, mbenvinds].ravel()  # be really careful about the index
-                    r_inds = np.tile(np.arange(envsperbatch), num_steps)
+                    r_inds = np.tile(np.arange(envsperbatch), valid_step)
 
                     cur_obs = {k: v[mbenvinds] for k, v in obs[0].items()}
                     # next_obs

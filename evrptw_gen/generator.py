@@ -59,6 +59,9 @@ class InstanceGenerator:
         # self.cus_num = self.config.cus_num
         # self.rs_num = self.config.rs_num
 
+    def _update_seeds(self, seed):
+        self.rng = np.random.default_rng(seed)
+
     def _prepare_env(self, raw_env: Dict) -> Tuple[Dict, Dict]:
         """
         Parse raw config into a flat env dict and extract a perturbation spec.

@@ -180,3 +180,4 @@ cplex.log
 
 *.txt
 *.sh
+plot_txt.py

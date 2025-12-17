@@ -1,6 +1,8 @@
 import gym
 import numpy as np
+import random
 from gym import spaces
+import time
 
 from evrptw_gen.generator import InstanceGenerator
 from evrptw_gen.benchmarks.envs.evrptw_data import EVRPTWDataset
@@ -12,38 +14,16 @@ def assign_env_config(self, kwargs):
     for key, value in kwargs.items():
         setattr(self, key, value)
 
+def gen_dist_matrix(nodes1: np.ndarray, nodes2: np.ndarray) -> np.ndarray:
+    # float32 + contiguous 通常更快
+    x = np.ascontiguousarray(nodes1, dtype=np.float32)
+    y = np.ascontiguousarray(nodes2, dtype=np.float32)
 
-def gen_dist_matrix(nodes1, nodes2):
-    """
-    Compute pairwise Euclidean distance matrix between two sets of nodes.
-
-    Args:
-        nodes1: np.ndarray of shape (N1, d)
-        nodes2: np.ndarray of shape (N2, d)
-
-    Returns:
-        np.ndarray of shape (N1, N2)
-    """
-    diff = nodes1[:, None, :] - nodes2[None, :, :]
-    return np.linalg.norm(diff, axis=-1)
-
-
-def fun_dist(loc1, loc2):
-    """
-    Elementwise Euclidean distance between two arrays of coordinates.
-
-    Args:
-        loc1: np.ndarray of shape (B, 2)
-        loc2: np.ndarray of shape (B, 2)
-
-    Returns:
-        np.ndarray of shape (B,)
-    """
-    return np.sqrt(
-        (loc1[:, 0] - loc2[:, 0]) ** 2 +
-        (loc1[:, 1] - loc2[:, 1]) ** 2
-    )
-
+    x2 = np.sum(x * x, axis=1, keepdims=True)          # (N1, 1)
+    y2 = np.sum(y * y, axis=1, keepdims=True).T        # (1, N2)
+    # 数值误差导致的负数做 clip
+    d2 = np.maximum(x2 + y2 - 2.0 * (x @ y.T), 0.0)     # (N1, N2)
+    return np.sqrt(d2, out=d2).astype(np.float32, copy=False)
 
 class EVRPTWVectorEnv(gym.Env):
     """
@@ -64,6 +44,9 @@ class EVRPTWVectorEnv(gym.Env):
     def __init__(self, *args, **kwargs):
         self.args = args
         self.kwargs = kwargs
+
+        self.phi_reward = True
+        self.lag_reward = True
 
         # ====== Configuration ======
         self.terminate = False
@@ -99,7 +82,7 @@ class EVRPTWVectorEnv(gym.Env):
         self.gamma = kwargs.get("gamma", 0.99)
         self.alpha = kwargs.get("alpha", 1.0)
         self.lambda_fail = kwargs.get("lambda_fail", 5.0)
-        self.success_bonus = kwargs.get("success_bonus", 0.01)
+        self.success_bonus = kwargs.get("success_bonus", 0.00)
         # self.snap_shot = {}
 
         # ====== Observation / Action spaces ======
@@ -145,45 +128,45 @@ class EVRPTWVectorEnv(gym.Env):
     # ======================================================================
 
     def seed(self, seed=None):
+        random.seed(seed)
         np.random.seed(seed)
+        self.dataset._update_seeds(seed)
 
     def reset(self):
-        """
-        Reset environment and generate a new instance (train/eval).
-        All internal dynamic states are initialized in normalized space.
-        """
         self.num_steps = 0
-        self.traj = []
-        self.restrictions = np.empty((0, 2), dtype=int)
+        # self.traj = []
         self.info = {}
 
-        # 1) Static data (instance) generation + normalization
         if self.env_mode == "eval":
-            self._eval_data_generate(mode = self.eval_mode)
+            self._eval_data_generate(mode=self.eval_mode)
         elif self.env_mode == "train":
             self._train_data_generate()
         else:
             raise ValueError(f"Unknown mode: {self.env_mode}")
 
-        # 2) Dynamic state initialization (normalized)
-        #    arrangement: [depot, customers..., RS...]
-        self.visited = np.zeros(
-            (self.n_traj, self.cus_num + self.rs_num + 1), dtype=bool
-        )
-        self.visited[:, 0] = True  # depot initially visited (start here)
+        if (not hasattr(self, "visited")) or (self.visited.shape != (self.n_traj, self.n_nodes)):
+            self.visited = np.empty((self.n_traj, self.n_nodes), dtype=np.bool_)
+            self.last = np.empty(self.n_traj, dtype=np.int32)
+            self.load = np.empty(self.n_traj, dtype=np.float32)
+            self.battery = np.empty(self.n_traj, dtype=np.float32)
+            self.current_time = np.empty(self.n_traj, dtype=np.float32)
+            self.done = np.empty(self.n_traj, dtype=np.bool_)
+            self.finish = np.empty(self.n_traj, dtype=np.bool_)
+            self.served_cus = np.empty(self.n_traj, dtype=np.int32)
 
-        self.last = np.zeros(self.n_traj, dtype=int)    # current node index
-        self.load = np.zeros(self.n_traj, dtype=float)  # current load (0..1)
-        # battery = consumed SoC fraction in [0,1], start with 0 consumption (full battery)
-        self.battery = np.zeros(self.n_traj, dtype=float)
-        # current_time in [0,1], start at 0
-        self.current_time = np.zeros(self.n_traj, dtype=float)
-
-        self.done = np.zeros(self.n_traj, dtype=bool)
-        self.finish = np.zeros(self.n_traj, dtype=bool)
+        self.visited.fill(False)
+        self.visited[:, 0] = True
+        self.last.fill(0)
+        self.load.fill(0.0)
+        self.battery.fill(0.0)
+        self.current_time.fill(0.0)
+        self.served_cus.fill(0)
+        self.done.fill(False)
+        self.finish.fill(False)
 
         self.state = self._update_state()
         return self.state
+
 
     def step(self, action):
         """
@@ -206,13 +189,13 @@ class EVRPTWVectorEnv(gym.Env):
         self.num_steps += 1
         self.state = self._update_state()
 
+        all_visited = self.is_all_visited()
         if self.terminate:
-            self.done = np.ones_like(self.done, dtype=bool)
+            self.done = np.ones_like(self.done, dtype=np.bool_)
         else:
-            self.done = (action == 0) & self.is_all_visited()
+            self.done = (action == 0) & all_visited
 
         if self.env_mode == "train":
-            all_visited = self.is_all_visited()
             new_done = self.done & (~self.finish)
             if self.terminate:
                 success = all_visited & (self.last == 0)
@@ -220,13 +203,14 @@ class EVRPTWVectorEnv(gym.Env):
                 success = self.done
 
             r_lag = np.zeros_like(self.reward, dtype=np.float32)
-            r_lag[new_done & success] += self.success_bonus
+            if self.lag_reward:
+                r_lag[new_done & success] += self.success_bonus
 
-            fail_mask = new_done & (~success)
-            if np.any(fail_mask):
-                served_ratio = self.visited[:, 1:1+self.cus_num].sum(axis=1).astype(np.float32) / float(self.cus_num)
-                unserved_ratio = 1.0 - served_ratio
-                r_lag[fail_mask] -= self.lambda_fail * unserved_ratio[fail_mask]
+                fail_mask = new_done & (~success)
+                if np.any(fail_mask):
+                    served_ratio = np.float32(self.served_cus / self.cus_num)
+                    unserved_ratio = 1.0 - served_ratio
+                    r_lag[fail_mask] -= self.lambda_fail * unserved_ratio[fail_mask]
 
             self.reward = self.reward + r_lag
 
@@ -241,9 +225,7 @@ class EVRPTWVectorEnv(gym.Env):
         Check if all customers (not depot, not RSs) have been visited.
         Node order: [0: depot, 1..cus_num: customers, cus_num+1..: RSs]
         """
-        cus_start = 1
-        rs_start = 1 + self.cus_num
-        return self.visited[:, cus_start:rs_start].all(axis=1)
+        return (self.served_cus == self.cus_num)
 
     def _update_state(self, update_mask=True):
         """
@@ -261,9 +243,9 @@ class EVRPTWVectorEnv(gym.Env):
             "current_battery": self.battery,
             "current_time": self.current_time,
             "service_time": self.service_time,
-            "battery_capacity": np.array(self.battery_capacity).reshape(-1),
-            "loading_capacity": np.array(self.loading_capacity).reshape(-1),
-            "visited_customers_raio": (self.visited[:, 1:1+self.cus_num]).sum(axis=1, keepdims=True)/self.cus_num,
+            "battery_capacity": self.battery_capacity_arr,
+            "loading_capacity": self.loading_capacity_arr,
+            "visited_customers_raio": (self.served_cus/self.cus_num)[:, None],
             "remain_feasible_customers_raio": ((~self.visited[:, 1:1+self.cus_num]) & (self.mask[:, 1:1+self.cus_num])).sum(axis=1, keepdims=True)/self.cus_num,
         }
         return obs
@@ -282,37 +264,35 @@ class EVRPTWVectorEnv(gym.Env):
             (5) Future Feasibility Pruning (FFP)
         All checks are in normalized units.
         """
-        cus_start_idx = 1
-        rs_start_idx = 1 + self.cus_num
-
         # False: cannot go, True: can go
         # base: cannot revisit nodes marked visited
         action_mask = ~self.visited
 
         # Depot & RSs can always be visited
         action_mask[:, 0] = True
-        action_mask[:, rs_start_idx:] = True
+        action_mask[:, self.rs_start:] = True
 
         # cannot visit itself
-        action_mask[np.arange(self.n_traj), self.last] = False
+        action_mask[self.traj_idx, self.last] = False
 
         # (2) load feasibility: load + demand <= capacity (1.0)
         load_mask = (self.load[:, None] + self.demands[None, :]) <= self.loading_capacity
         action_mask &= load_mask
 
         # (3) battery feasibility: current consumption + edge consumption <= 1.0
-        battery_need = self.battery[:, None] + self.edge_energy[self.last, :]
+        battery_need = self.battery[:, None] + self.edge_energy[self.last, :].astype(np.float32)
         battery_mask = battery_need <= self.battery_capacity
         action_mask &= battery_mask
 
         # (4) time window (arrival <= close)
         time_after_arrival = self.current_time[:, None] + self.travel_time[self.last, :]
-        time_mask = time_after_arrival <= self.time_window[:, 1][None, :]
+        time_mask = time_after_arrival <= self.tw_close_all[None, :]
+
         action_mask &= time_mask
 
         # (5) Future Feasibility Pruning (FFP): from current -> candidate customer -> some RS/depot -> depot
-        cus_idx = np.arange(cus_start_idx, rs_start_idx)   # all customers
-        rs_cols = np.r_[0, rs_start_idx:self.travel_time.shape[1]]  # depot + all RS
+        cus_idx = self.cus_idx
+        rs_cols = self.rs_cols
 
         # 1) current -> customer
         time_to_customer = self.travel_time[self.last[:, None], cus_idx]         # (n_traj, n_cus)
@@ -320,14 +300,18 @@ class EVRPTWVectorEnv(gym.Env):
         battery_at_customer = self.battery[:, None] + energy_to_customer        # (n_traj, n_cus)
 
         # start service time: max(arrival, TW open)
-        tw_open = self.time_window[cus_start_idx:rs_start_idx, 0][None, :]      # (1, n_cus)
+        # tw_open = self.time_window[self.cus_start:self.rs_start, 0][None, :]      # (1, n_cus)
+        tw_open = self.tw_open_cus[None, :]
         arrival_time = self.current_time[:, None] + time_to_customer           # (n_traj, n_cus)
         start_service_time = np.maximum(arrival_time, tw_open)                 # (n_traj, n_cus)
-        time_after_service = start_service_time + self.service_time[cus_start_idx:rs_start_idx][None, :]
+        # time_after_service = start_service_time + self.service_time[self.cus_start:self.rs_start][None, :]
+        time_after_service = start_service_time + self.service_time_cus[None, :]
 
         # 2) customer -> RS/depot
-        time_cust_to_rs = self.travel_time[np.ix_(cus_idx, rs_cols)][None, :, :]   # (1, n_cus, n_rs+1)
-        energy_cust_to_rs = self.edge_energy[np.ix_(cus_idx, rs_cols)][None, :, :] # (1, n_cus, n_rs+1)
+        # time_cust_to_rs = self.travel_time[np.ix_(cus_idx, rs_cols)][None, :, :]   # (1, n_cus, n_rs+1)
+        # energy_cust_to_rs = self.edge_energy[np.ix_(cus_idx, rs_cols)][None, :, :] # (1, n_cus, n_rs+1)
+        time_cust_to_rs = self.time_cus_to_rs[None, :, :]
+        energy_cust_to_rs = self.energy_cus_to_rs[None, :, :]
 
         battery_at_customer_3d = battery_at_customer[:, :, None]   # (n_traj, n_cus, 1)
         time_after_service_3d = time_after_service[:, :, None]     # (n_traj, n_cus, 1)
@@ -350,7 +334,7 @@ class EVRPTWVectorEnv(gym.Env):
         FFP_cus_mask = feasible.any(axis=2)  # (n_traj, n_cus)
 
         # only apply FFP on customers
-        action_mask[:, cus_start_idx:rs_start_idx] &= FFP_cus_mask
+        action_mask[:, self.cus_start:self.rs_start] &= FFP_cus_mask
 
         # (6) FFP on Charging Stations
         # if time Cur Node -> RS -> depot is infeasible, mask RS
@@ -363,7 +347,7 @@ class EVRPTWVectorEnv(gym.Env):
         # charging to full
         time_charge_at_rs = battery_at_rs * self.charging_beta
         time_charge_at_rs[:, 0] = 0.0  # depot 不充电
-        RS_time_to_depot_2d = self.RS_time_to_depot[None, :]  # (1, n_rs+1), normalized
+        RS_time_to_depot_2d = self.RS_time_to_depot_2d[None, :]
         total_finish_time_rs = time_at_rs + time_charge_at_rs + RS_time_to_depot_2d  # normalized
         rs_time_feasible = total_finish_time_rs <= self.instance_max_time              # <= 1.0
         rs_battery_feasible = battery_at_rs <= self.battery_capacity
@@ -378,22 +362,6 @@ class EVRPTWVectorEnv(gym.Env):
         customer_has_been_visited_and_at_depot = customer_has_been_visited & (self.last == 0)
         action_mask[customer_has_been_visited_and_at_depot, 1:] = False
 
-        # if action_mask.sum(axis=1).min() == 0:
-        #     print("===== DEBUG INFO =====")
-        #     print("Warning: some trajectory has no feasible actions!")
-        #     idx = np.where(action_mask.sum(axis=1) == 0)
-        #     print(idx, "Current location:", self.last[idx])
-            
-        #     # idx: 29 -> Location: ? -> 113
-        #     breakpoint()
-        #     # load snap_shot
-        #     self.last = self.snap_shot['last'].copy()
-        #     self.battery = self.snap_shot['battery'].copy()
-        #     self.current_time = self.snap_shot['current_time'].copy()
-        #     self.load = self.snap_shot['load'].copy()
-        #     self.visited = self.snap_shot['visited'].copy()
-
-            # self.snap_shot
         self.mask = action_mask
         return action_mask
 
@@ -441,6 +409,7 @@ class EVRPTWVectorEnv(gym.Env):
         self.rs_num = context["charging_stations"].shape[0]
 
         self._normalizations(context)
+
     def _normalizations(self, context):
         """
         Normalize all static quantities:
@@ -455,7 +424,7 @@ class EVRPTWVectorEnv(gym.Env):
         nodes_raw = np.concatenate(
             (context["depot"], context["customers"], context["charging_stations"])
         ).astype(np.float32)
-        positions = np.zeros_like(nodes_raw)
+        positions = np.zeros_like(nodes_raw, dtype=np.float32)
 
         # ----- Demand & time-related raw data -----
         demands_abs = context["demands"].astype(np.float32)       # (n_cus,)
@@ -549,6 +518,31 @@ class EVRPTWVectorEnv(gym.Env):
         # distance in normalized coordinate space (only for reward)
         self.dist_matrix = gen_dist_matrix(self.nodes, self.nodes).astype(np.float32)
 
+        # Auxilliary Function
+        self.cus_start = 1
+        self.rs_start  = 1 + self.cus_num
+        self.n_nodes   = 1 + self.cus_num + self.rs_num
+
+        self.battery_capacity_arr = np.array([self.battery_capacity], dtype=np.float32)
+        self.loading_capacity_arr = np.array([self.loading_capacity], dtype=np.float32)
+
+        self.traj_idx = np.arange(self.n_traj, dtype=np.int32)
+        self.cus_idx  = np.arange(self.cus_start, self.rs_start)
+        self.rs_cols  = np.concatenate(([0], np.arange(self.rs_start, self.n_nodes)))
+
+        # 常用静态切片（避免每步切）
+        self.tw_open_cus = self.time_window[self.cus_start:self.rs_start, 0].astype(np.float32)
+        self.tw_close_all = self.time_window[:, 1].astype(np.float32)
+        self.service_time_cus = self.service_time[self.cus_start:self.rs_start].astype(np.float32)
+
+        # customer -> (depot+RS) 的矩阵，episode 内不变
+        self.time_cus_to_rs = self.travel_time[np.ix_(self.cus_idx, self.rs_cols)].astype(np.float32)    # (n_cus, n_rs+1)
+        self.energy_cus_to_rs = self.edge_energy[np.ix_(self.cus_idx, self.rs_cols)].astype(np.float32)  # (n_cus, n_rs+1)
+
+        # RS->depot 常量（episode 内不变）
+        self.RS_time_to_depot_2d = self.RS_time_to_depot.astype(np.float32)  # (n_rs+1,)
+
+
     # ======================================================================
     #  Transition dynamics (in normalized space)
     # ======================================================================
@@ -560,18 +554,12 @@ class EVRPTWVectorEnv(gym.Env):
         Args:
             destination: np.ndarray of shape (n_traj,), each entry in [0, n_nodes-1]
         """
-        dest_node = self.nodes[destination]
-        last_node = self.nodes[self.last]
-
         # reward uses normalized Euclidean distance in [0, ~1.4]
-        dist_display = fun_dist(dest_node, last_node)
-
-        cus_start_idx = 1
-        rs_start_idx = 1 + self.cus_num
+        dist_display = self.dist_matrix[self.last, destination]   # shape (n_traj,)
 
         go_to_depot = destination == 0
-        go_to_rs = destination >= rs_start_idx
-        go_to_cus = (destination >= cus_start_idx) & (destination < rs_start_idx)
+        go_to_rs = destination >= self.rs_start
+        go_to_cus = (destination >= self.cus_start) & (destination < self.rs_start)
         go_to_rs_or_cus = ~go_to_depot
 
         # -------- Reward update --------
@@ -583,14 +571,15 @@ class EVRPTWVectorEnv(gym.Env):
             reward = -dist_display.astype(np.float32)
 
             # 2) potential-based shaping: Phi(s) = alpha * N_served(s)
-            prev_served_cus = self.visited[:, cus_start_idx:rs_start_idx].sum(axis=1).astype(np.float32)
-            next_served_cus = prev_served_cus + go_to_cus.astype(np.float32)
+            if self.phi_reward:
+                prev_served_cus = self.served_cus
+                next_served_cus = prev_served_cus + go_to_cus.astype(np.float32)
 
-            phi_s  = self.alpha * prev_served_cus
-            phi_sp = self.alpha * next_served_cus
+                phi_s  = self.alpha * prev_served_cus
+                phi_sp = self.alpha * next_served_cus
 
-            # gamma*Phi(s') - Phi(s)
-            reward += self.gamma * phi_sp - phi_s
+                # gamma*Phi(s') - Phi(s)
+                reward += self.gamma * phi_sp - phi_s
 
             self.reward = reward
 
@@ -598,6 +587,8 @@ class EVRPTWVectorEnv(gym.Env):
             raise ValueError(f"Unknown Mode: {self.env_mode}")
 
         # -------- Load update (normalized) --------
+        self.served_cus[go_to_cus] += 1
+
         # going to depot: unload all
         self.load[go_to_depot] = 0.0
         # going to customers/RS: add demand (RS demand is 0)
@@ -637,6 +628,6 @@ class EVRPTWVectorEnv(gym.Env):
         self.battery[go_to_cus] += self.edge_energy[self.last, destination][go_to_cus]
 
         # -------- Visited & last node update --------
-        self.visited[np.arange(self.n_traj), destination] = True
+        self.visited[self.traj_idx, destination] = True
         self.last = destination
 

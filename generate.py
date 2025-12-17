@@ -1,5 +1,5 @@
 from evrptw_gen import InstanceGenerator, EVRPTWDataset
-gen = InstanceGenerator("./evrptw_gen/configs/config.yaml", save_path="./Instances_5R", num_instances=10, plot_instances=True)
+gen = InstanceGenerator("./evrptw_gen/configs/config.yaml", save_path="./eval_data", num_instances=10, plot_instances=True)
 instances = gen.generate(save_template = "pickle")  # 自动保存到 npz
 
 # # 内存模式

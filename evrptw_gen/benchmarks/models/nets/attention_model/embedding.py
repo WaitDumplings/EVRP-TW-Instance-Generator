@@ -79,8 +79,8 @@ class EVRPTWEmbedding(nn.Module):
 
         # 0: depot, 1: RS, 2: customer
         self.type_embed = nn.Embedding(3, embedding_dim)
-        # with torch.no_grad():
-        #     self.type_embed.weight.zero_()
+        with torch.no_grad():
+            self.type_embed.weight.zero_()
             # self.type_embed.weight.mul_(1e-3)
 
     def forward(self, x):

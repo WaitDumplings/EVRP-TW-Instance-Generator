@@ -105,7 +105,7 @@ def parse_args():
     parser.add_argument(
         "--learning-rate",
         type=float,
-        default=3e-5,
+        default=4e-5,
         help="the learning rate of the optimizer",
     )
     parser.add_argument(
@@ -155,7 +155,7 @@ def parse_args():
     parser.add_argument(
         "--update-epochs",
         type=int,
-        default=4,
+        default=3,
         help="the K epochs to update the policy",
     )
     parser.add_argument(
@@ -167,7 +167,7 @@ def parse_args():
     parser.add_argument(
         "--n_encode_layers",
         type=int,
-        default=4,
+        default=3,
         help="number of encoder layers",
     )
     parser.add_argument(
@@ -241,12 +241,6 @@ def parse_args():
         type=int,
         default=32,
         help="test agent",
-    )
-    parser.add_argument(
-        "--temperature",
-        type=float,
-        default=1.1,
-        help="temperature when sampling",
     )
     parser.add_argument("--lambda-fail-init", type=float, default=5.0)
     parser.add_argument("--target-success", type=float, default=0.80)
