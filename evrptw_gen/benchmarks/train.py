@@ -26,7 +26,10 @@ from evrptw_gen.benchmarks.wrappers.recordWrapper import RecordEpisodeStatistics
 from evrptw_gen.benchmarks.wrappers.syncVectorEnvPomo import SyncVectorEnv
 from evrptw_gen.benchmarks.utils.utils import update_lambda_fail
 
-def make_env(env_id, seed, cfg={}):
+def make_env(env_id, seed, cfg=None):
+    if cfg is None:
+        cfg = {}
+
     def thunk():
         env = gym.make(env_id, **cfg)
         env = RecordEpisodeStatistics(env)
@@ -172,9 +175,15 @@ def train(args):
 
                 # ALGO LOGIC: action logic
                 with torch.no_grad():
+                    # if step == 0:
+                    #     print_label = True
+                    # else:
+                    #     print_label = False
+                    print_label = False
                     action, logprob, _, value, _ = agent.get_action_and_value_cached(
-                        next_obs, state=encoder_state
+                        next_obs, state=encoder_state, print_probs=print_label
                     )
+
                     action = action.view(num_envs, args.n_traj)
                     values[step] = value.view(num_envs, args.n_traj)
                 actions[step] = action
@@ -366,7 +375,7 @@ def train(args):
 
             if (update_step + 1) % 30 == 0:
                 # Evaluation Process
-                if eval_method == "fixed":
+                if eval_method == "generator":
                     num_test_envs = num_envs
                     test_envs = SyncVectorEnv(
                         [
@@ -374,7 +383,7 @@ def train(args):
                                 args.env_id,
                                 args.seed + i,
                                 cfg={"env_mode": "eval", 
-                                    "eval_mode": eval_method,   # fixed / solomon_txt
+                                    "eval_mode": eval_method,   # generator / solomon_txt
                                     "config_path": config_path, 
                                     "n_traj": test_traj_num, 
                                     "num_customers": test_num_cus, 
@@ -442,6 +451,9 @@ def train(args):
                 print(f"Evaluation over {len(r)} episodes: {avg_reward:.3f}, Step: {step}, Avg Done Step: {record_done.mean().item():.2f}, #CS visited: {record_cs.mean().item():.2f}")
                 print('->'.join(record_action))
                 print("-----------------------------")
+                if eval_method == "generator":
+                    test_envs.close()
+            if eval_method == "solomon_txt":
                 test_envs.close()
             envs.close()
 

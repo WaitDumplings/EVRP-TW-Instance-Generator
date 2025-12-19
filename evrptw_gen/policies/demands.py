@@ -20,7 +20,7 @@ class RandomDemandPolicy:
     def build(self, env: Dict, num_customers: int, rng: np.random.Generator) -> np.ndarray:
         cap = float(env.get("loading_capacity", 1.0))
         cfg = env.get("demand_random_config", {})
-        dmin = float(cfg.get("min", 0.1))
+        dmin = float(cfg.get("min", 0.01))
         dmax = float(cfg.get("max", cap))
 
         dmax = 0.15
@@ -28,7 +28,7 @@ class RandomDemandPolicy:
         if dmax <= dmin:
             dmax = dmin + 0.01
         demands = rng.uniform(dmin, dmax, size=num_customers)
-        return np.round(demands, 2).astype(np.float32)
+        return np.round(demands, 3).astype(np.float32)
 
 
 class DemandPolicies:

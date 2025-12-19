@@ -105,7 +105,7 @@ def parse_args():
     parser.add_argument(
         "--learning-rate",
         type=float,
-        default=4e-5,
+        default=3e-5,
         help="the learning rate of the optimizer",
     )
     parser.add_argument(
@@ -245,8 +245,8 @@ def parse_args():
     parser.add_argument("--lambda-fail-init", type=float, default=5.0)
     parser.add_argument("--target-success", type=float, default=0.80)
     parser.add_argument("--lambda-lr", type=float, default=1.0)
-    parser.add_argument("--lambda-max", type=float, default=20.0)
-    parser.add_argument("--lambda_lr_up", type=float, default=0.5,help="dual ascent step size when fail_rate > target_fail (constraint violated)")
+    parser.add_argument("--lambda-max", type=float, default=50.0)
+    parser.add_argument("--lambda_lr_up", type=float, default=1.0,help="dual ascent step size when fail_rate > target_fail (constraint violated)")
     parser.add_argument("--lambda_lr_down", type=float, default=2.0, help="dual descent step size when fail_rate < target_fail (constraint over-satisfied)")
     parser.add_argument("--lambda_tolerance", type=float, default=0.05, help="tolerance band around target_fail where lambda is not updated")
     parser.add_argument("--eval_method", type=str, default="solomon", help="evaluation method: greedy or sampling [fixed / solomon]")

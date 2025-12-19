@@ -145,7 +145,7 @@ class RandomPositionPolicy:
             B = num_customers * dummy_size
             xs = rng.uniform(uxmin, uxmax, size=B)
             ys = rng.uniform(uymin, uymax, size=B)
-            candidate = np.round(np.stack([xs, ys], axis=1), 2)       # (B, 2)
+            candidate = np.round(np.stack([xs, ys], axis=1), 3)       # (B, 2)
             service_times = service_time_policy.build(env, num_customers=B, rng=rng)  # (B,) hours
 
             # Compute feasibility & minimal times for this batch

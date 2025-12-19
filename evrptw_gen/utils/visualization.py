@@ -23,6 +23,10 @@ def _fmt2(x, width):
     """Format a number to a fixed-width string with 2 decimal places, right-aligned."""
     return f"{format(_as_float(x), '.2f'):>{width}}"
 
+def _fmt3(x, width):
+    """Format a number to a fixed-width string with 3 decimal places, right-aligned."""
+    return f"{format(_as_float(x), '.3f'):>{width}}"
+
 def _xy(pos):
     """Return (x, y) as floats from any pos shape: (2,), (1,2), [[x,y]], etc."""
     arr = np.asarray(pos, dtype=float).reshape(-1)
@@ -64,8 +68,8 @@ def save_instances(instances, save_path, template='solomon'):
                 dx, dy = _xy(depot_pos)
                 line = (
                     "D0         d          "
-                    f"{_fmt2(dx, 10)}{_fmt2(dy, 10)}"
-                    f"{_fmt2(0.0, 11)}{_fmt2(00.0, 11)}{_fmt2(instance_end_time, 11)}{_fmt2(0.0, 11)}\n"
+                    f"{_fmt3(dx, 10)}{_fmt3(dy, 10)}"
+                    f"{_fmt3(0.0, 11)}{_fmt3(00.0, 11)}{_fmt3(instance_end_time, 11)}{_fmt3(0.0, 11)}\n"
                 )
                 f.write(line)
 
@@ -74,8 +78,8 @@ def save_instances(instances, save_path, template='solomon'):
                     sx, sy = _xy(pos)
                     line = (
                         f"S{j}         f          "
-                        f"{_fmt2(sx, 10)}{_fmt2(sy, 10)}"
-                        f"{_fmt2(0.0, 11)}{_fmt2(0.0, 11)}{_fmt2(instance_end_time, 11)}{_fmt2(0.0, 11)}\n"
+                        f"{_fmt3(sx, 10)}{_fmt3(sy, 10)}"
+                        f"{_fmt3(0.0, 11)}{_fmt3(0.0, 11)}{_fmt3(instance_end_time, 11)}{_fmt3(0.0, 11)}\n"
                     )
                     f.write(line)
 
@@ -92,8 +96,8 @@ def save_instances(instances, save_path, template='solomon'):
 
                     line = (
                         f"C{k}         c          "
-                        f"{_fmt2(x, 10)}{_fmt2(y, 10)}"
-                        f"{_fmt2(demand, 11)}{_fmt2(ready, 11)}{_fmt2(due, 11)}{_fmt2(service, 11)}\n"
+                        f"{_fmt3(x, 10)}{_fmt3(y, 10)}"
+                        f"{_fmt3(demand, 11)}{_fmt3(ready, 11)}{_fmt3(due, 11)}{_fmt3(service, 11)}\n"
                     )
                     f.write(line)
 

@@ -145,9 +145,8 @@ class InstanceGenerator:
         instances = []
         for _ in range(self.num_instances):
             env = self._add_perturb(self.env, self.perturb_dict) if self.add_perturb else dict(self.env)
-            inst = self._generate_one_instance(env)
+            inst = self._generate_one_instance(env, format = save_template)
             instances.append(inst)
-
         if self.save_path:
             # save_instance_npz(inst, self.save_path)  # IO in io/saving.py
             save_instances(instances, self.save_path, template= save_template)
@@ -225,7 +224,7 @@ class InstanceGenerator:
         (xmin, xmax), (ymin, ymax) = env["area_size"]
         x = self.rng.uniform(xmin, xmax)
         y = self.rng.uniform(ymin, ymax)
-        return np.round(np.array([[x, y]], dtype=float), 2)
+        return np.round(np.array([[x, y]], dtype=float), 3)
 
     def _get_CSs_positions(self, env: Dict, depot_pos: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """

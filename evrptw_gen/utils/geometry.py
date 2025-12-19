@@ -38,7 +38,7 @@ def inflate_and_clip(rect: Rect, radius: float, bounds: Rect) -> Rect:
     y1 = min(bymax, ymax + radius)
     return ((x0, x1), (y0, y1))
 
-def sample_uniform_rect(rng: np.random.Generator, rect: Rect, n: int = 1, round_ndigits: int = 2) -> np.ndarray:
+def sample_uniform_rect(rng: np.random.Generator, rect: Rect, n: int = 1, round_ndigits: int = 3) -> np.ndarray:
     """Uniformly sample n points within rect; returns (n,2)."""
     (xmin, xmax), (ymin, ymax) = rect
     xs = rng.uniform(xmin, xmax, size=n)

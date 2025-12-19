@@ -165,7 +165,7 @@ class Agent(nn.Module):
         x = self.backbone.decode(x, state)
         return self.critic(x)
     
-    def get_action_and_value_cached(self, x, action=None, state=None):
+    def get_action_and_value_cached(self, x, action=None, state=None, print_probs=False):
         # breakpoint()
         if state is None:
             state = self.backbone.encode(x)
@@ -180,6 +180,12 @@ class Agent(nn.Module):
         #         if logits_inf[i, j, :].all():
         #             breakpoint()
         probs = torch.distributions.Categorical(logits=logits)
+        if print_probs:
+            cus_logits = logits[:, :, 1:101].mean().item()
+            cs_logits = logits[:, :, 101:].mean().item()
+            print(f"cus_logits: {cus_logits:.4f}, cs_logits: {cs_logits:.4f}")
+            if cs_logits // cus_logits > 10:
+                breakpoint()
         if action is None:
             action = probs.sample()
 

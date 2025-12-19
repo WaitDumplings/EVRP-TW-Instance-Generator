@@ -4,7 +4,7 @@ area_size: [[0.0, 100.0], [0.0, 100.0]]     # km
 num_customers: 100
 num_charging_stations: 20
 num_cluster: 5
-instance_type_distribution: {R: 1.0, C: 0.0, RC: 0.0}
+instance_type_distribution: {R: 0.4, C: 0.2, RC: 0.4}
 dist_fun: "2-norm"
 set_edge: False
 # test_instance_type: "RC"
