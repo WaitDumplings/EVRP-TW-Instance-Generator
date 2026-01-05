@@ -34,24 +34,35 @@ def _xy(pos):
         raise ValueError(f"Position must have at least 2 numbers, got: {pos}")
     return float(arr[0]), float(arr[1])
 
+def print_type(instances):
+    for i in range(len(instances)):
+        instance_type = instances[i]['env']['instance_type']
+        time_window_type = instances[i]['env']['time_window_type']
+        print(f'Instance {i}: {instance_type}, {time_window_type}')
+
 def save_instances(instances, save_path, template='solomon'):
     """Save EVRP instances in the Solomon dataset format."""
-    os.makedirs(save_path, exist_ok=True)
 
     if template == 'solomon':
+        save_path_solomon = os.path.join(save_path, "solomon")
+        os.makedirs(save_path_solomon, exist_ok=True)
         timestamp = int(time.time())
         
         for i in range(len(instances)):
             time_window_type = instances[i]['env']['time_window_type']
             instance_type = instances[i]['env']['instance_type']
             save_file_name = f'solomon_dataset_{i}_{instance_type}_{time_window_type}_{timestamp}.txt'
-
             inst = instances[i]
+
             instance_end_time = inst['env'].get('instance_endTime', 1440.0) / 60
 
             depot_pos = inst['depot']                      # e.g., np.array([13.55, 45.28]) or [[13.55, 45.28]]
             charging_station_pos = np.concatenate((depot_pos, inst['charging_stations']), axis = 0)  # list of positions
             customers = inst['customers']                  # (x, y, demand, readytime, latesttime, servicetime)
+            demands   = inst["demands"].reshape(-1, 1)
+            time_windows = inst["tw"] / 60 # tw -> hours
+            service_time = inst["service_time"].reshape(-1, 1) / 60 # minutes -> hours
+
             # breakpoint()
             Q = inst['env']['battery_capacity']
             C = inst['env']['loading_capacity']
@@ -59,7 +70,23 @@ def save_instances(instances, save_path, template='solomon'):
             g = 1 / inst['env']['charging_speed']        # inverse refueling rate
             v = inst['env']['speed']
 
-            save_name = os.path.join(save_path, save_file_name)
+            env = inst.get("env", {})
+
+            num_cluster = env.get("num_cluster", env.get("num_clusters", None))
+
+            # keep units consistent with the file (hours)
+            ws = env.get("working_startTime", env.get("working_start_time", None))
+            we = env.get("working_endTime", env.get("working_end_time", None))
+            working_start_h = None if ws is None else float(ws) / 60.0
+            working_end_h   = None if we is None else float(we) / 60.0
+
+            service_time_type = env.get("service_time_type", None)
+            demand_type       = env.get("demand_type", None)  
+            x_range           = env.get("area_size", None)[0]
+            y_range           = env.get("area_size", None)[1]
+ 
+
+            save_name = os.path.join(save_path_solomon, save_file_name)
             with open(save_name, "w") as f:
                 # Header
                 f.write("StringID   Type       x          y          demand     ReadyTime  DueDate    ServiceTime\n")
@@ -84,7 +111,8 @@ def save_instances(instances, save_path, template='solomon'):
                     f.write(line)
 
                 # Customers
-                for k, c in enumerate(customers):
+                customer_info = np.concatenate((customers, demands, time_windows, service_time), axis=1)
+                for k, c in enumerate(customer_info):
                     # c may be list/tuple/ndarray, possibly nested; robustly extract six fields
                     arr = np.asarray(c, dtype=float).reshape(-1)
 
@@ -108,10 +136,30 @@ def save_instances(instances, save_path, template='solomon'):
                 f.write(f"r fuel consumption rate /{format(_as_float(r), '.2f')}/\n")
                 f.write(f"g inverse refueling rate /{format(_as_float(g), '.4f')}/\n")
                 f.write(f"v average Velocity /{format(_as_float(v), '.2f')}/\n")
+                # Extra metadata
+                f.write("\n" + "-" * 20 + "\n")
+                # Write out as readable lines
+                f.write(f"number of clusters /{num_cluster}/\n")
+                f.write(f"working_startTime (hour) /{format(working_start_h, '.2f') if working_start_h is not None else 'None'}/\n")
+                f.write(f"working_endTime (hour) /{format(working_end_h, '.2f') if working_end_h is not None else 'None'}/\n")
+                f.write(f"service_time_type /{service_time_type}/\n")
+                f.write(f"demand_type /{demand_type}/\n")
+                f.write(f"instance_type /{instance_type}/\n")
+                f.write(f"instance x range /{x_range}/\n")
+                f.write(f"instance y range /{y_range}/\n")
+                # ---- cs_time_to_depot (array) ----
+                cs_ttd = env.get("cs_time_to_depot", None)
 
+                # Decide unit label; you can change this to "min" if your env stores minutes.
+                cs_ttd = np.asarray(cs_ttd, dtype=float).reshape(-1)
+                # Write as a compact comma-separated list (stable & easy to parse)
+                cs_ttd_str = ",".join(f"{x:.6f}" for x in cs_ttd.tolist())
+                f.write(f"cs_time_to_depot (hour)/[{cs_ttd_str}]/\n")
+            
             print(f"✅ Saved: {save_name}")
 
     elif template == 'pickle':
+        save_path_pickle = os.path.join(save_path, "pickle")
         def check_extension(filename):
             if os.path.splitext(filename)[1] != ".pkl":
                 return filename + ".pkl"
@@ -120,17 +168,18 @@ def save_instances(instances, save_path, template='solomon'):
         cus_scale = instances[0]['env']['num_customers']
         rs_scale = instances[0]['env']['num_charging_stations']
         filename = "evrptw_{}C_{}R.pkl".format(cus_scale, rs_scale)
-        filedir = os.path.join(save_path, filename)
+        filedir = os.path.join(save_path_pickle, filename)
 
-        if not os.path.isdir(save_path):
-            os.makedirs(save_path)
+        if not os.path.isdir(save_path_pickle):
+            os.makedirs(save_path_pickle)
 
         with open(check_extension(filedir), 'wb') as f:
             pickle.dump(instances, f, pickle.HIGHEST_PROTOCOL)
 
 
 def plot_instance(instances, save_path):
-    os.makedirs(save_path, exist_ok=True)
+    save_path_plots = os.path.join(save_path, "plots")
+    os.makedirs(save_path_plots, exist_ok=True)
     timestamp = int(time.time())
 
     for i in range(len(instances)):
@@ -172,6 +221,6 @@ def plot_instance(instances, save_path):
         ax.legend(loc='best')
 
         # --- save ---
-        out_path = os.path.join(save_path, save_file_name)
+        out_path = os.path.join(save_path_plots, save_file_name)
         fig.savefig(out_path, dpi=200, bbox_inches='tight')
         plt.close(fig)

@@ -130,7 +130,7 @@ def train(args):
     eval_method = args.eval_method
     test_envs = None
     config_iter_number = 1  # 或更多
-    num_updates = 5000
+    num_updates = 500
     # num_updates = args.total_timesteps // args.batch_size
     num_steps = args.num_steps
     num_envs = args.num_envs
@@ -147,7 +147,8 @@ def train(args):
         config_path = args.config_path
         n_traj_num = args.n_traj
         test_traj_num = args.test_agent
-        
+
+
         num_steps = 170
         num_envs = 96
 
@@ -189,6 +190,8 @@ def train(args):
             encoder_state = agent.backbone.encode(next_obs)
             next_done = torch.zeros(num_envs, args.n_traj).to(device)
             alive = torch.ones(num_envs, args.n_traj, dtype=torch.bool, device=device)
+
+            r = []
 
             ## Main Logic ##
             import time
@@ -566,7 +569,7 @@ def train(args):
                 # TRY NOT TO MODIFY: start the game
                 agent.eval()
                 test_obs = test_envs.reset()
-                record_info = []
+                r = []
                 record_done = np.zeros((num_test_envs, test_traj_num))
                 record_cs = np.zeros((num_test_envs, test_traj_num))
                 record_action = ['D']
@@ -579,7 +582,6 @@ def train(args):
                     finish_idx = (record_done == 0) & (test_done == True)
                     record_done[finish_idx] = step + 1
                     record_cs[action.cpu().numpy()> test_num_cus] += 1  # action > 100 means go to CS
-
                     if DEBUG_TEST:
                         if action[0][0] == 0:
                             if record_action[-1] == "D":
@@ -593,16 +595,15 @@ def train(args):
 
                     for item in test_info:
                         if "episode" in item.keys():
-                            record_info.append(item)
+                            r.append(item)
 
                     if test_done.all():
                         break
 
-                avg_reward = np.mean([item["episode"]["r"] for item in record_info])
-
+                avg_reward = np.mean([item["episode"]["r"] for item in r])
                 print("----- Evaluation Result -----")
                 print("Number of Customers:", test_num_cus, "Number of Charging Stations:", test_num_cs)
-                print(f"Evaluation over {len(record_info)} episodes: {avg_reward:.3f}, Step: {step}, Avg Done Step: {record_done.mean().item():.2f}, #CS visited: {record_cs.mean().item():.2f}")
+                print(f"Evaluation over {len(r)} episodes: {avg_reward:.3f}, Step: {step}, Avg Done Step: {record_done.mean().item():.2f}, #CS visited: {record_cs.mean().item():.2f}")
                 print('->'.join(record_action))
                 print("-----------------------------")
 

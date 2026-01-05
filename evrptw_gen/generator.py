@@ -4,14 +4,15 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import math
 import os
+import copy
+from tqdm import tqdm
 
 from .configs.load_config import Config
-from .policies.positions import CustomerPositionPolicies
-from .policies.timewindows import TimeWindowPolicies
-from .policies.servicetimes import ServiceTimePolicies
-from .policies.demands import DemandPolicies
-from .policies.cluster_number import ClusterNumberPolicies
-from .policies.cluster_assignment import ClusterAssignmentPolicies
+from .policies.position import CustomerPositionPolicies
+from .policies.time_window import TimeWindowPolicies
+from .policies.service_time import ServiceTimePolicies
+from .policies.demand import DemandPolicies
+from .policies.perturb import Perturbation
 
 from .io.saving import save_instance_npz, save_instances_npz
 from .utils.geometry import clamp
@@ -19,45 +20,27 @@ from .utils.feasibility import cs_min_time_to_depot, effective_charging_power_kw
 from .utils.visualization import plot_instance, save_instances
 from .utils.energy_consumption_model import consumption_model
 
-# from configs.load_config import Config
-# from policies.positions import CustomerPositionPolicies
-# from policies.timewindows import TimeWindowPolicies
-# from policies.servicetimes import ServiceTimePolicies
-# from policies.demands import DemandPolicies
-# from policies.cluster_number import ClusterNumberPolicies
-# from policies.cluster_assignment import ClusterAssignmentPolicies
-
-# from io.saving import save_instance_npz, save_instances_npz
-# from utils.geometry import clamp
-# from utils.feasibility import cs_min_time_to_depot, effective_charging_power_kw
-# from utils.visualization import plot_instance, save_instances
-# from utils.energy_consumption_model import consumption_model
-
 
 class InstanceGenerator:
     def __init__(self, config_path: str, **kwargs):
         self.config = Config(config_path)
-        # self.config.data.update({
-        #     k: v
-        #     for k, v in kwargs['kwargs'].items()
-        #     if k in self.config.data
-        # })
-
         self.save_path: Optional[str] = kwargs.get("save_path")
         self.num_instances: int = int(kwargs.get("num_instances", 100))
-        self.plot_instance: bool = bool(kwargs.get("plot_instances", True))
         raw_env: Dict = self.config.setup_env_parameters()
 
         # Persist RNG (seeded if provided)
         seed = raw_env.get("rng_seed", None)
         self.rng = np.random.default_rng(seed)
+        self.env = self._prepare_env(raw_env)
 
-        self.add_perturb: bool = bool(raw_env.get("add_perturb", False))
-        self.env, self.perturb_dict = self._prepare_env(raw_env)
+    def _add_perturb_env(self, env: Dict, perturb_dict: Dict, perturber) -> Dict:
+        # Add perturbation logic here
+        update_value = perturber.perturb(env, perturb_keys=perturb_dict)
 
-        # initial cus / rs nodes
-        # self.cus_num = self.config.cus_num
-        # self.rs_num = self.config.rs_num
+        for key, value in update_value.items():
+            # print("Before Perturb:", key, env[key], "After Perturb:", value)
+            env[key] = value
+        return env
 
     def _update_seeds(self, seed):
         self.rng = np.random.default_rng(seed)
@@ -77,7 +60,6 @@ class InstanceGenerator:
             "charging_profiles",
             "instance_time_range",
             "working_schedule_profiles",
-            "perturb",
         ]
 
         def time_to_minutes(hhmm: str) -> int:
@@ -90,7 +72,7 @@ class InstanceGenerator:
                 env[k] = v
 
         # Vehicles (assume homogeneous: index 0)
-        vprof = raw_env["vehicles_profiles"][-1]
+        vprof = raw_env["vehicles_profiles"][0]
         # Keep canonical names consistent downstream
         env["speed"] = float(vprof["speed"])  # km/h
         env["battery_capacity"] = float(vprof["battery_capacity"])  # kWh
@@ -107,6 +89,7 @@ class InstanceGenerator:
 
         # Time horizon and working window
         inst_start, inst_end = raw_env["instance_time_range"]
+
         ws_idx = 0
         work_start = raw_env["working_schedule_profiles"][ws_idx]["start"]
         work_end = raw_env["working_schedule_profiles"][ws_idx]["end"]
@@ -119,54 +102,71 @@ class InstanceGenerator:
         if "rng_seed" in raw_env:
             env["rng_seed"] = raw_env["rng_seed"]
 
-        # Perturb spec
-        perturb_dict: Dict = {}
-        for p in raw_env.get("perturb", []):
-            perturb_dict.update(p)
+        return env
 
-        return env, perturb_dict
+    def generate(self, perturb_dict=None, node_generater_scheduler=None, **kwargs) -> List[Dict]:
+        if perturb_dict is None:
+            perturb_dict = {}
 
-    def _add_perturb(self, raw_env: dict, perturb_dict: dict) -> dict:
-        copy_env = raw_env.copy()
-        for key, value in perturb_dict.items():
-            raw_env_feature = key[:-2]  # strip "_p"
-            sample = float(self.rng.uniform(value[0], value[1]))
-            if raw_env_feature.startswith("num"):
-                copy_env[raw_env_feature] += int(sample)
-                copy_env[raw_env_feature] = max(1, copy_env[raw_env_feature])
-            else:
-                copy_env[raw_env_feature] *= (1 + sample)
-                # keep reasonable precision for reals
-                if isinstance(copy_env[raw_env_feature], float):
-                    copy_env[raw_env_feature] = round(copy_env[raw_env_feature], 4)
-        return copy_env
-
-    def generate(self, save_template = "solomon") -> List[Dict]:
         instances = []
-        for _ in range(self.num_instances):
-            env = self._add_perturb(self.env, self.perturb_dict) if self.add_perturb else dict(self.env)
-            inst = self._generate_one_instance(env, format = save_template)
+        node_generate_policy = kwargs.get("node_generate_policy", "fixed")
+        save_solomon = kwargs.get("save_template_solomon", False)
+        save_pickle = kwargs.get("save_template_pickle", False)
+        plot_instances = kwargs.get("plot_instances", False)
+
+        if save_pickle:
+            node_generate_policy = "fixed"
+
+        perturber = Perturbation()
+
+        # 绑定到局部变量，减少循环内查找开销
+        base_env = self.env
+        add_perturb = self._add_perturb_env
+        gen_one = self._generate_one_instance
+        scheduler = node_generater_scheduler
+
+        # scheduler 为空时给个更清晰的报错（比 NoneType is not callable 更友好）
+        if scheduler is None:
+            raise ValueError("node_generater_scheduler is None, but generate() expects a callable scheduler.")
+
+        num_cus, num_cs = scheduler(policy_name=node_generate_policy)
+        base_env['num_customers'] = num_cus
+        base_env['num_charging_stations'] = num_cs
+            
+        for _ in tqdm(range(self.num_instances)):
+            # 关键：浅拷贝即可（前提：后续不要原地改 base_env 的嵌套对象）
+            env = base_env.copy()
+
+            # add perturbations
+            env = add_perturb(env, perturb_dict, perturber)
+            inst = gen_one(env)
             instances.append(inst)
+
+        # 保存阶段不在循环里，OK
         if self.save_path:
-            # save_instance_npz(inst, self.save_path)  # IO in io/saving.py
-            save_instances(instances, self.save_path, template= save_template)
-            if self.plot_instance:
-                Instance_save_path = os.path.join(self.save_path, 'plot_instances')
-                plot_instance(instances, Instance_save_path)
+            if save_solomon:
+                save_instances(instances, self.save_path, template="solomon")
+            if save_pickle:
+                save_instances(instances, self.save_path, template="pickle")
+            if plot_instance:
+                instance_save_path = os.path.join(self.save_path, "plot_instances")
+                plot_instance(instances, instance_save_path)
         return instances
 
-    def generate_tensors(self, env = None, format= 'tensor', **kargs):
+    def generate_tensors(self, env = None, **kwargs):
         if env == None:
             env = self.env
-        context = self._generate_one_instance(env, format = format)
+
+        perturber = Perturbation()
+        perturb_dict = kwargs.get("perturb_dict", {})
+        env["num_customers"] = kwargs.get("num_customers", env['num_customers'])
+        env["num_charging_stations"] = kwargs.get("num_charging_stations", env['num_charging_stations'])
+        perturb_env = self._add_perturb_env(env, perturb_dict, perturber)
+        perturb_env = copy.deepcopy(perturb_env)
+        context = self._generate_one_instance(perturb_env)
         return context
 
-    def _update_envs(self, args):
-        for key, value in vars(args).items():
-            if key in self.env:
-                self.env[key] = value
-
-    def _generate_one_instance(self, env: Dict, format = "tensor") -> Dict:
+    def _generate_one_instance(self, env: Dict) -> Dict:
         # Select policies from env
         pos_policy = CustomerPositionPolicies.from_env(env)
         tw_policy  = TimeWindowPolicies.from_env(env)
@@ -177,42 +177,88 @@ class InstanceGenerator:
 
         depot_pos = self._get_depot_position(env)
         cs_pos, cs_time_to_depot, depot_time_to_cs = self._get_CSs_positions(env, depot_pos)
-
-        demand = demand_policy.build(env, num_customers=env['num_customers'], rng=self.rng)
-
         # In case we may need for different policies.
-        env['demand'] = demand 
+        env['instance_type'] = pos_policy.NAME
         env['cs_time_to_depot'] = cs_time_to_depot
+        env['time_window_type'] = tw_policy.NAME
+        env['service_time_type'] = service_time_policy.NAME
+        env['demand_type'] = demand_policy.NAME
 
-        cus_pos, service_time, t_earliest, t_latest = pos_policy.sample(
-            env, depot_pos, cs_pos, cs_time_to_depot, depot_time_to_cs, service_time_policy, rng=self.rng
+        cus_pos, service_time, t_earliest, t_latest, demand = pos_policy.sample(
+            env, depot_pos, cs_pos, cs_time_to_depot, depot_time_to_cs, service_time_policy, rng=self.rng, demand_policy=demand_policy
         )
+        if env['num_customers'] != cus_pos.shape[0]:
+            raise ValueError("Inconsistent shapes in customer position generation.")
 
-        if format == "tensor":
-            # tensor use minutes as format
-            tw = tw_policy.build(
-            env, t_earliest, t_latest, service_time, rng=self.rng, tw_format = "minutes"
-            )
-            customers_pos = cus_pos
-            demand = demand
-            service_time = service_time * 60  # convert to minutes
+        # tensor use minutes as format
+        tw = tw_policy.build(
+        env, t_earliest, t_latest, service_time, rng=self.rng, tw_format = "minutes"
+        )
+        customers_pos = cus_pos
+        demand = demand
+        service_time = service_time * 60  # convert to minutes
 
-            return {"env": env, 
-                    "depot": depot_pos, 
-                    "customers": customers_pos, 
-                    "charging_stations": cs_pos, 
-                    "demands":demand, 
-                    "tw":tw,
-                    "service_time":service_time}
-        elif format == "solomon":
-            # solomon use hours as format
-            tw = tw_policy.build(
-                env, t_earliest, t_latest, service_time, rng=self.rng, tw_format = "hours"
-            ) 
-            customers = np.hstack([cus_pos, demand.reshape(-1, 1), tw, service_time.reshape(-1, 1)])
-            return {"env": env, "depot": depot_pos, "customers": customers, "charging_stations": cs_pos}
-        else:
-            raise ValueError(f"Unknown format: {format}")
+        return {"env": env, 
+                "depot": depot_pos, 
+                "customers": customers_pos, 
+                "charging_stations": cs_pos, 
+                "demands":demand, 
+                "tw":tw,
+                "service_time":service_time}
+
+    # def _generate_one_instance(self, env: Dict, format = "tensor") -> Dict:
+    #     # Select policies from env
+    #     pos_policy = CustomerPositionPolicies.from_env(env)
+    #     tw_policy  = TimeWindowPolicies.from_env(env)
+
+    #     # time unit: hours
+    #     service_time_policy = ServiceTimePolicies.from_env(env)
+    #     demand_policy = DemandPolicies.from_env(env)
+
+    #     depot_pos = self._get_depot_position(env)
+    #     cs_pos, cs_time_to_depot, depot_time_to_cs = self._get_CSs_positions(env, depot_pos)
+    #     # In case we may need for different policies.
+    #     env['instance_type'] = pos_policy.NAME
+    #     env['cs_time_to_depot'] = cs_time_to_depot
+    #     env['time_window_type'] = tw_policy.NAME
+    #     env['service_time_type'] = service_time_policy.NAME
+    #     env['demand_type'] = demand_policy.NAME
+
+    #     cus_pos, service_time, t_earliest, t_latest, demand = pos_policy.sample(
+    #         env, depot_pos, cs_pos, cs_time_to_depot, depot_time_to_cs, service_time_policy, rng=self.rng, demand_policy=demand_policy
+    #     )
+    #     if env['num_customers'] != cus_pos.shape[0]:
+    #         raise ValueError("Inconsistent shapes in customer position generation.")
+    #     if format in ["tensor", "pickle"]:
+    #         # tensor use minutes as format
+    #         tw = tw_policy.build(
+    #         env, t_earliest, t_latest, service_time, rng=self.rng, tw_format = "minutes"
+    #         )
+    #         customers_pos = cus_pos
+    #         demand = demand
+    #         service_time = service_time * 60  # convert to minutes
+
+    #         return {"env": env, 
+    #                 "depot": depot_pos, 
+    #                 "customers": customers_pos, 
+    #                 "charging_stations": cs_pos, 
+    #                 "demands":demand, 
+    #                 "tw":tw,
+    #                 "service_time":service_time}
+    #     elif format in "solomon":
+    #         # solomon use hours as format
+    #         if env['num_customers'] != service_time.shape[0]:
+    #             raise ValueError("Inconsistent shapes in service time generation.")
+    #         tw = tw_policy.build(
+    #             env, t_earliest, t_latest, service_time, rng=self.rng, tw_format = "hours"
+    #         ) 
+    #         customers = np.hstack([cus_pos, demand.reshape(-1, 1), tw, service_time.reshape(-1, 1)])
+    #         return {"env": env, 
+    #                 "depot": depot_pos, 
+    #                 "customers": customers,
+    #                 "charging_stations": cs_pos}
+    #     else:
+    #         raise ValueError(f"Unknown format: {format}")
 
     def _get_depot_position(self, env: Dict) -> np.ndarray:
         """

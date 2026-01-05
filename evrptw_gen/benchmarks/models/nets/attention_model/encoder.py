@@ -10,7 +10,6 @@ class MultiHeadAttentionLayer(nn.Module):
         n_heads: int,
         embedding_dim: int,
         feed_forward_hidden: int = 512,
-        dropout: float = 0.1,
     ):
         super().__init__()
         self.attn = MultiHeadAttentionProj(
@@ -22,9 +21,7 @@ class MultiHeadAttentionLayer(nn.Module):
         self.ff = nn.Sequential(
             nn.Linear(embedding_dim, feed_forward_hidden),
             nn.SiLU(),
-            nn.Dropout(dropout),
             nn.Linear(feed_forward_hidden, embedding_dim),
-            nn.Dropout(dropout),
         )
         self.norm2 = nn.LayerNorm(embedding_dim)
 
@@ -52,7 +49,6 @@ class GraphAttentionEncoder(nn.Module):
         embed_dim: int,
         n_layers: int,
         feed_forward_hidden: int = 512,
-        dropout: float = 0.1,
     ):
         super().__init__()
 
@@ -62,7 +58,6 @@ class GraphAttentionEncoder(nn.Module):
                     n_heads,
                     embed_dim,
                     feed_forward_hidden,
-                    dropout=dropout,
                 )
                 for _ in range(n_layers)
             ]

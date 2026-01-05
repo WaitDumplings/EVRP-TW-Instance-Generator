@@ -108,6 +108,8 @@ def parse_args():
         default=3e-5,
         help="the learning rate of the optimizer",
     )
+    parser.add_argument("--critic-lr", type=float, default=1e-5)
+
     parser.add_argument(
         "--weight-decay",
         type=float,
@@ -123,7 +125,7 @@ def parse_args():
     parser.add_argument(
         "--num-steps",
         type=int,
-        default=160,
+        default=200,
         help="the number of steps to run in each environment per policy rollout",
     )
     parser.add_argument(
@@ -155,13 +157,13 @@ def parse_args():
     parser.add_argument(
         "--update-epochs",
         type=int,
-        default=3,
+        default=4,
         help="the K epochs to update the policy",
     )
     parser.add_argument(
         "--tanh_clipping",
         type=float,
-        default=15.0,
+        default=10.0,
         help="tanh clipping in the agent",
     )
     parser.add_argument(
@@ -195,25 +197,21 @@ def parse_args():
     parser.add_argument(
         "--ent-coef",
         type=float,
-        default=0.01,
+        default=0.005,
         help="coefficient of the entropy",
     )
     parser.add_argument(
         "--vf-coef",
         type=float,
-        default=0.5,
+        default=0.1,
         help="coefficient of the value function",
     )
-    parser.add_argument(
-        "--max-grad-norm",
-        type=float,
-        default=1.0,
-        help="the maximum norm for the gradient clipping",
-    )
+    parser.add_argument("--max-grad-norm-backbone", type=float, default=2.0)
+    parser.add_argument("--max-grad-norm-critic", type=float, default=10.0)
     parser.add_argument(
         "--target-kl",
         type=float,
-        default=None,
+        default=0.01,
         help="the target KL divergence threshold",
     )
     parser.add_argument(
@@ -229,6 +227,12 @@ def parse_args():
         help="how many test instance",
     )
     parser.add_argument(
+        "--test-sample-mode",
+        type=str,
+        default="greedy",
+        help="sampling methods in testing",
+    )
+    parser.add_argument(
         "--multi-greedy-inference",
         type=lambda x: bool(strtobool(x)),
         default=True,
@@ -239,9 +243,10 @@ def parse_args():
     parser.add_argument(
         "--test_agent",
         type=int,
-        default=32,
+        default=1,
         help="test agent",
     )
+    parser.add_argument("--use-graph-token", type=bool, default=True)
     parser.add_argument("--lambda-fail-init", type=float, default=5.0)
     parser.add_argument("--target-success", type=float, default=0.80)
     parser.add_argument("--lambda-lr", type=float, default=1.0)

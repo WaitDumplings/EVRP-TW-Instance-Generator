@@ -124,9 +124,10 @@ class Critic(nn.Module):
         )
 
         # ✅ 应用 Orthogonal 初始化
-        for layer in self.mlp:
+        for layer in self.mlp[:-1]:
             if isinstance(layer, nn.Linear):
                 orthogonal_init(layer, gain=0.01)  # 低 gain 让 V(s) 训练更平滑
+        orthogonal_init(self.mlp[-1], gain=0.01)
 
     def forward(self, x):
         return self.mlp(x[1])  
@@ -166,35 +167,18 @@ class Agent(nn.Module):
         return self.critic(x)
     
     def get_action_and_value_cached(self, x, action=None, state=None, print_probs=False):
-        # breakpoint()
         if state is None:
             state = self.backbone.encode(x)
             x = self.backbone.decode(x, state)
         else:
             x = self.backbone.decode(x, state)
         logits = self.actor(x)
-
-        # logits_inf = (logits == -torch.inf)
-        # for i in range(logits_inf.shape[0]):
-        #     for j in range(logits_inf.shape[1]):
-        #         if logits_inf[i, j, :].all():
-        #             breakpoint()
         probs = torch.distributions.Categorical(logits=logits)
-        if print_probs:
-            cus_logits = logits[:, :, 1:101].mean().item()
-            cs_logits = logits[:, :, 101:].mean().item()
-            print(f"cus_logits: {cus_logits:.4f}, cs_logits: {cs_logits:.4f}")
-            if cs_logits // cus_logits > 10:
-                breakpoint()
         if action is None:
             action = probs.sample()
 
-        # cus_logits = logits[:, :, 1:101].mean().item()
-        # cs_logits = logits[:, :, 101:].mean().item()
-        # print(f"cus_logits: {cus_logits:.4f}, cs_logits: {cs_logits:.4f}")
-
-        # value_state = self.critic(x)
-        return action, probs.log_prob(action), probs.entropy(), self.critic(x), state
+        value = self.critic((x[0], x[1].detach())) 
+        return action, probs.log_prob(action), probs.entropy(), value, state
 
 class stateWrapper:
     def __init__(self, states, device, problem="evrptw"):

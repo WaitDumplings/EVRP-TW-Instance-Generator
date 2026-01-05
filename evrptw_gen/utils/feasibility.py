@@ -178,7 +178,6 @@ def cus_min_time_to_depot(
         """
         # Combine depot and charging stations into a single position array
         css_pos = np.vstack((depot_pos, cs_positions))  # (1+S, 2)
-
         # Include depot-to-CS and CS-to-depot travel times with depot at index 0
         time_depot_to_cs = np.concatenate(([0.0], time_depot_to_cs), axis=0)
         cs_time_to_depot = np.concatenate(([0.0], cs_time_to_depot), axis=0)

@@ -84,6 +84,7 @@ class CustomerPositionPolicy(Protocol):
         time_depot_to_css: np.ndarray,
         service_time_policy: np.ndarray,
         rng: np.random.Generator,
+        demand_policy
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         ...
 
@@ -104,6 +105,7 @@ class RandomPositionPolicy:
                time_css_to_depot,   # (S,) hours: CS -> Depot
                service_time_policy,
                rng,
+               demand_policy = None,
                num_customers = None,
                energy_consumption_model_type = None):
 
@@ -122,6 +124,7 @@ class RandomPositionPolicy:
         time_customer_depot = []   # fastest return time (hours)
         time_depot_customer = []   # earliest arrival time (hours)
         service_times_list = []
+        demands_list = []
 
         # Ensure depot_pos is (2,), cs_pos is (S,2)
         candidates_css = np.vstack([depot_pos, cs_pos])  # (1+S, 2)
@@ -146,7 +149,8 @@ class RandomPositionPolicy:
             xs = rng.uniform(uxmin, uxmax, size=B)
             ys = rng.uniform(uymin, uymax, size=B)
             candidate = np.round(np.stack([xs, ys], axis=1), 3)       # (B, 2)
-            service_times = service_time_policy.build(env, num_customers=B, rng=rng)  # (B,) hours
+            demands = demand_policy.build(env, num_customers=B, rng=rng)  # (B,)
+            service_times = service_time_policy.build(env, num_customers=B, rng=rng, demand=demands)  # (B,) hours
 
             # Compute feasibility & minimal times for this batch
             out = cus_min_time_to_depot(
@@ -169,6 +173,7 @@ class RandomPositionPolicy:
                 time_customer_depot.append(min_time_cus_dep[feas_vec])
                 time_depot_customer.append(min_time_dep_cus[feas_vec])
                 service_times_list.append(service_times[feas_vec])
+                demands_list.append(demands[feas_vec])
 
             # Optional: early stop if we’ve already exceeded target by a lot
             if sum(x.shape[0] for x in customers) >= num_customers * 2:
@@ -180,6 +185,7 @@ class RandomPositionPolicy:
             time_customer_depot = np.concatenate(time_customer_depot, axis=0)[:num_customers]
             time_depot_customer = np.concatenate(time_depot_customer, axis=0)[:num_customers]
             service_times_list = np.concatenate(service_times_list, axis=0)[:num_customers]
+            demands_list = np.concatenate(demands_list, axis=0)[:num_customers]
         else:
             customers = np.empty((0, 2)); time_customer_depot = np.empty((0,))
             time_depot_customer = np.empty((0,)); service_times_list = np.empty((0,))
@@ -194,6 +200,7 @@ class RandomPositionPolicy:
             np.asarray(service_times_list, dtype=float),   # hours
             np.asarray(t_earliest, dtype=float),           # minutes
             np.asarray(t_latest, dtype=float),             # minutes
+            np.asarray(demands_list, dtype=float)
         )
         
 class ClusterPositionPolicy:
@@ -215,11 +222,13 @@ class ClusterPositionPolicy:
                 time_depot_to_css,
                 service_time_policy, 
                 rng,
+                demand_policy = None,
                 num_customers = None,
                 energy_consumption_model_type = None):
 
         if num_customers is None:
             num_customers = int(env['num_customers']) 
+
         consumption_per_distance = consumption_model(env, model_type = energy_consumption_model_type)
         dummy_size = int(env.get("dummy_size", 5))
         css_positions = np.concatenate([depot_pos.reshape(1,2), cs_pos], axis=0)  # (S+1, 2)
@@ -228,6 +237,7 @@ class ClusterPositionPolicy:
         dist_threshold = 10.0  # min distance between cluster centers
 
         cluster_number = self.cluster_number_fun.build(env, rng=rng)
+        cluster_number = min(cluster_number, num_customers)  # avoid over-clustering
         num_customers_per_cluster_list = self.num_customers_per_cluster.build(env, cluster_number, rng=rng, num_customers = num_customers)
         k = num_customers_per_cluster_list.shape[0]
 
@@ -271,21 +281,25 @@ class ClusterPositionPolicy:
         time_depot_customer = []
         time_customer_depot = []
         service_times_list = []
+        demands_list = []
 
         # Part2: 簇内采样
         # Policy1: Isotropic
         lb, ub = 0.7, 1.0
+        record = []
         for idx in range(k):
             customers_k = np.zeros((0,2))
             time_depot_to_customer_k = np.zeros((0,))
             time_customer_to_depot_k = np.zeros((0,))
             service_times_k = np.zeros((0,))
+            demands_k = np.zeros((0,))
 
             cluster_range = np.random.uniform(lb, ub) * dist_threshold
             num_customers_per_cluster = num_customers_per_cluster_list[idx]
-            
+            try_time = 0
             while len(customers_k) < num_customers_per_cluster:
-                service_times = service_time_policy.build(env, num_customers=num_customers_per_cluster * dummy_size, rng=rng)  # (B,) hours
+                demands = demand_policy.build(env, num_customers=num_customers_per_cluster * dummy_size, rng=rng)  # (B,)
+                service_times = service_time_policy.build(env, num_customers=num_customers_per_cluster * dummy_size, rng=rng, demand = demands)  # (B,) hours
                 angle = rng.uniform(0, 2*np.pi, size = num_customers_per_cluster * dummy_size)
                 r = rng.uniform(0, cluster_range, size = num_customers_per_cluster * dummy_size)
                 cx = cluster_positions[idx][0] + r * np.cos(angle)
@@ -314,22 +328,31 @@ class ClusterPositionPolicy:
                     time_customer_to_depot_k = np.concatenate((time_customer_to_depot_k, min_time_cus_dep[feas_vec]), axis=0)
                     time_depot_to_customer_k = np.concatenate((time_depot_to_customer_k, min_time_dep_cus[feas_vec]), axis=0)
                     service_times_k = np.concatenate((service_times_k, service_times[feas_vec]), axis=0)
+                    demands_k = np.concatenate((demands_k, demands[feas_vec]), axis=0)
+                try_time += 1
+                if try_time >= 5000:
+                    breakpoint()
 
             customers_k = customers_k[:num_customers_per_cluster]
             time_depot_to_customer_k = time_depot_to_customer_k[:num_customers_per_cluster]
             time_customer_to_depot_k = time_customer_to_depot_k[:num_customers_per_cluster]
             service_times_k = service_times_k[:num_customers_per_cluster]
+            demands_k = demands_k[:num_customers_per_cluster]
 
             customers.append(customers_k)
             time_depot_customer.append(time_depot_to_customer_k)
             time_customer_depot.append(time_customer_to_depot_k)
             service_times_list.append(service_times_k)
+            demands_list.append(demands_k)
 
         customers = np.vstack(customers)  # (num_customers, 2)
         time_depot_customer = np.hstack(time_depot_customer)  # (num_customers,)
         time_customer_depot = np.hstack(time_customer_depot)  # (num_customers,)
         service_times_list = np.hstack(service_times_list)          # (num
-
+        demands_list = np.hstack(demands_list)                    # (num_customers,)
+        if customers.shape[0] != num_customers:
+            breakpoint()
+            raise ValueError("Inconsistent shapes in customer position generation.")
         # Policy2: Anisotropic (ellipse)
         # TODO
 
@@ -343,6 +366,7 @@ class ClusterPositionPolicy:
             np.asarray(service_times_list, dtype=float),   # hours
             np.asarray(t_earliest, dtype=float),           # minutes
             np.asarray(t_latest, dtype=float),             # minutes
+            np.asarray(demands_list, dtype=float)
         )
 
 class MixedRCPositionPolicy:
@@ -366,15 +390,16 @@ class MixedRCPositionPolicy:
                 time_depot_to_css,
                 service_time_policy, 
                 rng,
+                demand_policy = None,
                 num_customers = None,
                 energy_consumption_model_type = None):
-
+            
             if num_customers == None:
                 num_customers = env['num_customers']
 
             num_random_customer, num_cluster_customer = self.rc_policies.build(env, rng = rng)
-
             cluster_number = self.cluster_number_fun.build(env, rng=rng)
+            cluster_number = min(cluster_number, num_cluster_customer)
             assignments = self.num_customers_per_cluster.build(env, cluster_number, rng=rng, num_customers = num_cluster_customer)
             env['num_customers_per_cluster'] = assignments
 
@@ -385,6 +410,7 @@ class MixedRCPositionPolicy:
                                                time_depot_to_css,
                                                service_time_policy, 
                                                rng,
+                                               demand_policy = demand_policy,
                                                num_customers = num_random_customer,
                                                energy_consumption_model_type = energy_consumption_model_type)
 
@@ -395,23 +421,27 @@ class MixedRCPositionPolicy:
                                                 time_depot_to_css,
                                                 service_time_policy, 
                                                 rng,
+                                                demand_policy = demand_policy,
                                                 num_customers = num_cluster_customer,
                                                 energy_consumption_model_type = energy_consumption_model_type) 
 
-
-            random_customers, random_service_time, random_t_earliest, random_t_latest = random_output
-            cluster_customers, clusterservice_time, cluster_t_earliest, cluster_t_latest = cluster_output
+            random_customers, random_service_time, random_t_earliest, random_t_latest, random_demands = random_output
+            cluster_customers, clusterservice_time, cluster_t_earliest, cluster_t_latest, cluster_demands = cluster_output
 
             customers = np.concatenate((random_customers, cluster_customers), axis = 0)
             t_earliest = np.concatenate((random_t_earliest, cluster_t_earliest))
             t_latest = np.concatenate((random_t_latest, cluster_t_latest))
             service_times_list = np.concatenate((random_service_time, clusterservice_time))
-
+            demands_list = np.concatenate((random_demands, cluster_demands))
+            if customers.shape[0] != env['num_customers']:
+                breakpoint()
+                raise ValueError("Inconsistent shapes in customer position generation.")
             return (
                 np.asarray(customers, dtype=float),
                 np.asarray(service_times_list, dtype=float),   # hours
                 np.asarray(t_earliest, dtype=float),           # minutes
                 np.asarray(t_latest, dtype=float),             # minutes
+                np.asarray(demands_list, dtype=float)
             )
 class CustomerPositionPolicies:
     REGISTRY = {
@@ -436,7 +466,7 @@ class CustomerPositionPolicies:
 
         if "test_instance_type" in env:
             choice = env["test_instance_type"]
-
+        
         elif dist is not None and isinstance(dist, dict) and len(dist) > 0:
             keys = list(dist.keys())
             probs = np.array(list(dist.values()), dtype=float)
@@ -451,7 +481,7 @@ class CustomerPositionPolicies:
 
         if choice not in cls.REGISTRY:
             raise ValueError(f"Unknown instance_type: {choice}")
-
+        choice = "RC"
         env["instance_type"] = choice  # record sampled type for reference/logging
         return cls.REGISTRY[choice](env)
 

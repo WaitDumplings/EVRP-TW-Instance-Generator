@@ -27,6 +27,9 @@ class AttentionScore(nn.Module):
         d_k = query.size(-1)
         u_score = torch.matmul(query, key.transpose(-2, -1)) * self.scale / math.sqrt(d_k)
 
+        with torch.no_grad():
+            self.last_sat = (torch.abs(torch.tanh(u_score)) > 0.98).float().mean()
+
         if self.use_tanh:
             logits = torch.tanh(u_score) * self.C
         else:

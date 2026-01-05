@@ -1,8 +1,13 @@
 # evrptw_gen/policies/timewindows.py
 from __future__ import annotations
 from typing import Dict, Protocol
+from collections import Counter
 import numpy as np
 from scipy.stats import truncnorm
+
+testset_name = "time_window_policy"
+config_list_name = "time_window_policy_list"
+config_type_name = "time_window_policy_config"
 
 class TimeWindowPolicy(Protocol):
     def build(
@@ -22,7 +27,7 @@ class TimeWindowPolicy(Protocol):
 
 # ---- Two concrete strategies: Narrow / Wide ----
 class NarrowTWPolicy:
-    NAME = "Narrow"
+    NAME = "narrow"
 
     def build(
         self,
@@ -42,13 +47,13 @@ class NarrowTWPolicy:
         - service_time can be scalar or length-N array (minutes).
         - time_route_instance optionally provides a per-customer margin to finish the route before instance_endTime.
         """
-        cfg = env.get("time_window_narrow_config", {})
+        cfg = env[config_type_name][self.NAME]
         alpha = float(cfg.get("alpha", 0.3))  # mean width factor of feasible span
         beta  = float(cfg.get("beta",  0.05)) # std factor of feasible span
-        tw_min_width = float(cfg.get("min_width", 1.0))  # absolute minimum width (minutes)
         round_ndigits = int(cfg.get("round_ndigits", 2))
 
-        N = int(env.get("num_customers", service_time.shape[0]))
+        # N = int(env.get("num_customers", service_time.shape[0]))
+        N = env["num_customers"]
         lb = float(env["working_startTime"])
         ub = float(env["working_endTime"])
  
@@ -63,6 +68,7 @@ class NarrowTWPolicy:
         std_w  = beta  * span
 
         a, b = (0 - mean_w) / std_w, np.inf
+
         widths = truncnorm.rvs(a, b, loc=mean_w, scale=std_w, size=N, random_state=rng)
         # widths = rng.normal(loc=mean_w, scale=std_w)
         # enforce width >= tw_min_width but also not exceed span (otherwise clamp to span)
@@ -86,7 +92,7 @@ class NarrowTWPolicy:
 
 
 class WideTWPolicy:
-    NAME = "Wide"
+    NAME = "wide"
 
     def build(
         self,
@@ -113,6 +119,9 @@ class WideTWPolicy:
         round_ndigits = int(cfg.get("round_ndigits", 2))
 
         N = int(env.get("num_customers", service_time.shape[0]))
+
+        if env['num_customers'] is not None and env['num_customers'] != service_time.shape[0]:
+            breakpoint()
         lb = float(env["working_startTime"])
         ub = float(env["working_endTime"])
  
@@ -150,36 +159,37 @@ class WideTWPolicy:
 # ---- Factory: only Narrow / Wide are currently supported ----
 class TimeWindowPolicies:
     REGISTRY = {
-        "Narrow": NarrowTWPolicy,
-        "Wide": WideTWPolicy,
+        "narrow": NarrowTWPolicy,
+        "wide": WideTWPolicy,
     }
 
     @classmethod
     def _sample_choice(cls, env: Dict) -> str:
         """
         Select the time window type with the following priority:
-        1) If 'test_timewindow_type' is present in env, use it (for deterministic testing).
+        1) If 'time_window_type' is present in env, use it (for deterministic testing).
         2) Otherwise, sample from 'time_window_type_distribution' according to probabilities.
         3) If both missing or invalid, raise ValueError.
         """
-        if "test_timewindow_type" in env:
-            return env["test_timewindow_type"]
+        if testset_name in env and env[testset_name] is not None:
+            return env[testset_name]
 
-        dist = env.get("time_window_type_distribution", None)
-        if dist is not None and isinstance(dist, dict) and len(dist) > 0:
-            keys = list(dist.keys())
-            probs = np.array(list(dist.values()), dtype=float)
-            probs /= probs.sum()
-            return np.random.choice(keys, p=probs)
+        type_list = env.get(config_list_name, None)
+        if Counter(type_list) != Counter(cls.REGISTRY.keys()):
+            raise ValueError(f"Unknown policy: {type_list}")
+        score_list = []
+        for key in type_list:
+            cfg = env[config_type_name][key]
+            score = cfg.get("score", 0)
+            score_list.append(score)
 
-        raise ValueError(
-            "Neither 'time_window_type_distribution' nor 'test_timewindow_type' provided or valid in env."
+        choice = np.random.choice(
+            type_list,
+            p=np.array(score_list) / np.sum(score_list)
         )
+        return choice
 
     @classmethod
     def from_env(cls, env: Dict) -> TimeWindowPolicy:
         choice = cls._sample_choice(env)
-        if choice not in cls.REGISTRY:
-            raise ValueError(f"Unknown time_window_type: {choice} (expected one of {list(cls.REGISTRY)})")
-        env["time_window_type"] = choice  # record the sampled type for reproducibility
         return cls.REGISTRY[choice]()

@@ -69,15 +69,14 @@ class EVRPTWVectorEnv(gym.Env):
             kwargs=kwargs,
         )
 
-        config_data = self.dataset.config.data
-        self.cus_num = config_data.get("num_customers", None)
-        self.rs_num = config_data.get("num_charging_stations", None)
+        self.cus_num = self.kwargs.get("num_customers", None)
+        self.rs_num = self.kwargs.get("num_charging_stations", None)
+        self.perturb_dict = self.kwargs.get("perturb_dict", {})
+        
+        self.env_mode = kwargs.get("env_mode", "train")  # "train" or "eval"   
+        if self.env_mode == "train" and (self.cus_num is None or self.rs_num is None):
+            raise ValueError("In 'train' mode, num_customers and num_charging_stations must be specified!")
 
-        if not self.cus_num or not self.rs_num:
-            raise ValueError(
-                "Customer number or charging station number is not predefined!"
-            )
-        self.env_mode = kwargs.get("env_mode", "train")  # "train" or "eval"
         assign_env_config(self, kwargs)
         self.gamma = kwargs.get("gamma", 0.99)
         self.alpha = kwargs.get("alpha", 1.0)
@@ -86,6 +85,11 @@ class EVRPTWVectorEnv(gym.Env):
         # self.snap_shot = {}
 
         # ====== Observation / Action spaces ======
+        if self.env_mode == 'train':
+            self._observation_update()
+        self.reset()
+
+    def _observation_update(self):
         obs_dict = {
             "cus_loc": spaces.Box(low=0, high=1, shape=(self.cus_num, 2)),
             "depot_loc": spaces.Box(low=0, high=1, shape=(1, 2)),
@@ -120,8 +124,6 @@ class EVRPTWVectorEnv(gym.Env):
             [self.rs_num + self.cus_num + 1] * self.n_traj
         )
         self.reward_space = None
-
-        self.reset()
 
     # ======================================================================
     #  Gym API
@@ -378,7 +380,10 @@ class EVRPTWVectorEnv(gym.Env):
         Generate one training instance and normalize all static data
         into the internal normalized representation.
         """
-        context = self.dataset.generate_tensors()
+        context = self.dataset.generate_tensors(perturb_dict=self.perturb_dict,
+                                                num_customers=self.cus_num,
+                                                num_charging_stations=self.rs_num,
+                                                format = "tensor")
         self.context = context
         self.depot_num = context["depot"].shape[0]
         self.cus_num = context["customers"].shape[0]
@@ -409,6 +414,7 @@ class EVRPTWVectorEnv(gym.Env):
         self.rs_num = context["charging_stations"].shape[0]
 
         self._normalizations(context)
+        self._observation_update()
 
     def _normalizations(self, context):
         """
@@ -480,6 +486,7 @@ class EVRPTWVectorEnv(gym.Env):
         charging_beta = b_s / (charging_power_abs * T_scale)  # E_max / (P_chg * T_scale)
 
         # --------- 7. Update env internal static state ---------
+        self.raw_speed = velocity_abs
         self.nodes_raw = nodes_raw
         self.nodes = positions
         self.depot_nodes = positions[0:1]
