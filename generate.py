@@ -1,10 +1,10 @@
 from evrptw_gen import InstanceGenerator, EVRPTWDataset
 from evrptw_gen.configs.load_config import Config
 from evrptw_gen.utils.nodes_generatro_scheduler import NodesGeneratorScheduler
-gen = InstanceGenerator("./evrptw_gen/configs/config.yaml", save_path="./eval_data_1000", num_instances=200, plot_instances=False)
+gen = InstanceGenerator("./evrptw_gen/configs/config.yaml", save_path="./eval_data_1000", num_instances=1000, plot_instances=False)
 
 # Generate 可以设置一个Num_Cus, Num_CS 的scheduler
-nodes_generatro_scheduler = NodesGeneratorScheduler(min_customer_num=10, max_customer_num=100, cus_per_cs=5)
+nodes_generatro_scheduler = NodesGeneratorScheduler(min_customer_num=90, max_customer_num=100, cus_per_cs=5)
 perturb_dict = Config("./evrptw_gen/configs/perturb_config.yaml").setup_env_parameters()
 
 instances = gen.generate(perturb_dict=perturb_dict['perturb'],

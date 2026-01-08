@@ -127,7 +127,6 @@ def train(args):
     # 1: for config (决定instance difficulty)
     # 2: for cus / cs size (选择好此时batch的cus / cs size)
     # 3: for iter: (训练次数 + PPO)
-    eval_method = args.eval_method
     test_envs = None
     config_iter_number = 1  # 或更多
     num_updates = 5000
@@ -135,10 +134,17 @@ def train(args):
     num_steps = args.num_steps
     num_envs = args.num_envs
 
-    node_generater_scheduler = NodesGeneratorScheduler(min_customer_num=80, max_customer_num=120, cus_per_cs=5)
+    node_generater_scheduler = NodesGeneratorScheduler(min_customer_num=110, max_customer_num=120, cus_per_cs=5)
     node_generate_policy = "linear" # "linear" / "random"   
     perturb_dict = Config("./evrptw_gen/configs/perturb_config.yaml").setup_env_parameters()
     customer_numbers, charging_stations_numbers = node_generater_scheduler(policy_name=node_generate_policy)
+
+    import time
+    start = time.time()
+    config = Config(args.config_path)
+    eval_data = pickle.load(open(args.eval_data_path, "rb"))
+    num_test_envs = len(eval_data)
+    eval_batch_size = args.eval_batch_size
 
     for config_iter in range(config_iter_number):
         # 1. 选本轮使用的 config_path 和 n_traj
@@ -162,7 +168,7 @@ def train(args):
                     make_env(
                         args.env_id,
                         args.seed + i,
-                        cfg={"config_path": config_path, 
+                        cfg={"config": config, 
                              "n_traj": n_traj_num, 
                              "num_customers": customer_numbers, 
                              "num_charging_stations": charging_stations_numbers,
@@ -525,78 +531,71 @@ def train(args):
             test_num_cus = 100
             test_num_cs = 20
 
-            if (update_step + 1) % 10 == 0:
+            if (update_step + 1) % 20 == 0:
                 # Evaluation Process
-                if eval_method == "generator":
-                    num_test_envs = num_envs
+                # TRY NOT TO MODIFY: start the game
+
+                del obs, actions, logprobs, rewards, dones, values, advantages, returns  # 举例
+                torch.cuda.empty_cache()
+
+                agent.eval()
+
+                record_info = []
+                record_action = ['D']
+                record_done_total = np.zeros((num_test_envs, test_traj_num))
+                record_cs_total = np.zeros((num_test_envs, test_traj_num))
+
+                for i in range(0, num_test_envs, eval_batch_size):
+                    batch_test_env_id = list(range(i, min(i + eval_batch_size, num_test_envs)))
+                    batch_size = len(batch_test_env_id)
                     test_envs = SyncVectorEnv(
                         [
                             make_env(
                                 args.env_id,
                                 args.seed + i,
                                 cfg={"env_mode": "eval", 
-                                    "eval_mode": eval_method,   # generator / solomon_txt
-                                    "config_path": config_path, 
-                                    "n_traj": test_traj_num, 
-                                    "num_customers": test_num_cus, 
-                                    "num_charging_stations": test_num_cs},
+                                    "config": config, 
+                                    "n_traj": args.test_agent,
+                                    "eval_data": eval_data[i]},   # New Arg
                             )
-                            for i in range(num_test_envs)
+                            for i in batch_test_env_id
                         ]
                     )
-                else:
-                    if test_envs is None:
-                        num_test_envs = len(pickle.load(open(args.eval_data_path, "rb")))
-                        test_envs = SyncVectorEnv(
-                            [
-                                make_env(
-                                    args.env_id,
-                                    args.seed + i,
-                                    cfg={"env_mode": "eval", 
-                                        "eval_mode": eval_method,   # fixed / solomon_txt
-                                        "config_path": config_path, 
-                                        "n_traj": test_traj_num,
-                                        "ins_index": i,
-                                        "eval_data_path": args.eval_data_path},   # New Arg
-                                )
-                                for i in range(num_test_envs)
-                            ]
-                        )
 
-                # TRY NOT TO MODIFY: start the game
-                agent.eval()
-                test_obs = test_envs.reset()
-                record_info = []
-                record_done = np.zeros((num_test_envs, test_traj_num))
-                record_cs = np.zeros((num_test_envs, test_traj_num))
-                record_action = ['D']
-                for step in range(0, 300):
-                    # ALGO LOGIC: action logic
-                    with torch.no_grad():
-                        action, logits = agent(test_obs)
-                    # TRY NOT TO MODIFY: execute the game and log data.
-                    test_obs, _, test_done, test_info = test_envs.step(action.cpu().numpy())
-                    finish_idx = (record_done == 0) & (test_done == True)
-                    record_done[finish_idx] = step + 1
-                    record_cs[action.cpu().numpy()> test_num_cus] += 1  # action > 100 means go to CS
+                    record_done = np.zeros((batch_size, test_traj_num))
+                    record_cs = np.zeros((batch_size, test_traj_num))
+                    test_obs = test_envs.reset()
+                    for step in range(0, 2000):
+                        # ALGO LOGIC: action logic
+                        with torch.no_grad():
+                            action, logits = agent(test_obs)
+                        action = action.to("cpu").numpy()
+                        # TRY NOT TO MODIFY: execute the game and log data.
+                        test_obs, _, test_done, test_info = test_envs.step(action)
+                        finish_idx = (record_done == 0) & (test_done == True)
+                        record_done[finish_idx] = step + 1
+                        record_cs[action> test_num_cus] += 1  # action > 100 means go to CS
 
-                    if DEBUG_TEST:
-                        if action[0][0] == 0:
-                            if record_action[-1] == "D":
-                                DEBUG_TEST = False
+                        if DEBUG_TEST:
+                            if action[0][0] == 0:
+                                if record_action[-1] == "D":
+                                    DEBUG_TEST = False
+                                else:
+                                    record_action.append("D")
+                            elif action[0][0] > test_num_cus:
+                                record_action.append("R")
                             else:
-                                record_action.append("D")
-                        elif action[0][0] > test_num_cus:
-                            record_action.append("R")
-                        else:
-                            record_action.append("C" + str(action[0][0].item()))
+                                record_action.append("C" + str(action[0][0].item()))
 
-                    for item in test_info:
-                        if "episode" in item.keys():
-                            record_info.append(item)
+                        for item in test_info:
+                            if "episode" in item.keys():
+                                record_info.append(item)
 
-                    if test_done.all():
-                        break
+                        if test_done.all():
+                            break
+                    record_done_total[i:i+len(batch_test_env_id), :] = record_done
+                    record_cs_total[i:i+len(batch_test_env_id), :] = record_cs
+                    test_envs.close()
 
                 avg_reward = np.mean([item["episode"]["r"] for item in record_info])
 
@@ -608,11 +607,8 @@ def train(args):
 
                 # Update curriculm learning setting
                 customer_numbers, charging_stations_numbers = node_generater_scheduler(policy_name=node_generate_policy)
-
-                if eval_method == "generator":
-                    test_envs.close()
-            if eval_method == "solomon_txt":
-                test_envs.close()
+                del record_info, record_done_total, record_cs_total  # 这些是 numpy，主要是 CPU 内存
+                torch.cuda.empty_cache()
             envs.close()
 
 

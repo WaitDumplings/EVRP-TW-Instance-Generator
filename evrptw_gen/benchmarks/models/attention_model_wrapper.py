@@ -148,6 +148,7 @@ class Agent(nn.Module):
         x = self.backbone(x, use_mask)
         logits = self.actor(x)
         action = logits.max(2)[1]
+        
         return action, logits
 
     def get_value(self, x):

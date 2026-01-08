@@ -51,9 +51,7 @@ class EVRPTWVectorEnv(gym.Env):
         # ====== Configuration ======
         self.terminate = False
         self.config_path = kwargs.get("config_path", None)
-        if not self.config_path:
-            raise ValueError("config_path to construct env is required!")
-
+        self.config = kwargs.get("config", None)
         self.n_traj = kwargs.get("n_traj", 100)
 
         # ====== Load dataset / config ======
@@ -66,6 +64,7 @@ class EVRPTWVectorEnv(gym.Env):
             save_path=save_path,
             num_instances=num_instances,
             plot_instances=plot_instances,
+            config = self.config,
             kwargs=kwargs,
         )
 
@@ -140,7 +139,7 @@ class EVRPTWVectorEnv(gym.Env):
         self.info = {}
 
         if self.env_mode == "eval":
-            self._eval_data_generate(mode=self.eval_mode)
+            self._eval_data_generate()
         elif self.env_mode == "train":
             self._train_data_generate()
         else:
@@ -391,22 +390,22 @@ class EVRPTWVectorEnv(gym.Env):
 
         self._normalizations(context)
 
-    def _eval_data_generate(self, mode, **kwargs):
-        """
-        TODO: implement evaluation data generation if needed.
-        """
-        if mode == "fixed":
-            context = self.dataset.generate_tensors(format = "tensor")
-        elif mode == "solomon":
-            if "ins_index" not in self.kwargs:
-                raise ValueError("Please provide 'ins_index' for solomon eval mode!")
+    def _eval_data_generate(self, mode=None, **kwargs):
 
-            index = self.kwargs["ins_index"]
-            eval_data_path = self.kwargs.get("eval_data_path", "./eval_data/")
-            eval_dataset = EVRPTWDataset(eval_data_path)
-            context = eval_dataset[index]
-        else:
-            raise ValueError(f"Unknown eval mode: {mode}")
+        # if mode == "fixed":
+        #     context = self.dataset.generate_tensors(format = "tensor")
+        # elif mode == "solomon":
+        #     eval_data = self.kwargs.get("eval_data", None)
+        #     if eval_data is None:
+        #         raise ValueError("Please provide 'eval_data' for solomon eval mode!")
+        #     context = eval_data
+        # else:
+        #     raise ValueError(f"Unknown eval mode: {mode}")
+
+        eval_data = self.kwargs.get("eval_data", None)
+        if eval_data is None:
+            raise ValueError("Please provide 'eval_data' for solomon eval mode!")
+        context = eval_data
 
         self.context = context
         self.depot_num = context["depot"].shape[0]

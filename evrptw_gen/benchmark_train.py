@@ -254,8 +254,9 @@ def parse_args():
     parser.add_argument("--lambda_lr_up", type=float, default=1.0,help="dual ascent step size when fail_rate > target_fail (constraint violated)")
     parser.add_argument("--lambda_lr_down", type=float, default=2.0, help="dual descent step size when fail_rate < target_fail (constraint over-satisfied)")
     parser.add_argument("--lambda_tolerance", type=float, default=0.05, help="tolerance band around target_fail where lambda is not updated")
-    parser.add_argument("--eval_method", type=str, default="solomon", help="evaluation method: greedy or sampling [fixed / solomon]")
-    parser.add_argument("--eval_data_path", type=str, default="./eval_data/evrptw_100C_20R.pkl", help="path to evaluation data when eval_env_mode is solomon_txt")
+    parser.add_argument("--env_mode", type=str, default="train", help="env mode: train / eval")
+    parser.add_argument("--eval_batch_size", type=int, default=32, help="the batch size for evaluation")
+    parser.add_argument("--eval_data_path", type=str, default="./eval_data_1000/pickle/evrptw_100C_20R.pkl", help="path to evaluation data when eval_env_mode is solomon_txt")
     parser.add_argument(
         "--config_path",
         type=str,

@@ -23,7 +23,10 @@ from .utils.energy_consumption_model import consumption_model
 
 class InstanceGenerator:
     def __init__(self, config_path: str, **kwargs):
-        self.config = Config(config_path)
+        self.config= kwargs.get("config", None)
+        if self.config is None:
+            self.config = Config(config_path)
+
         self.save_path: Optional[str] = kwargs.get("save_path")
         self.num_instances: int = int(kwargs.get("num_instances", 100))
         raw_env: Dict = self.config.setup_env_parameters()
