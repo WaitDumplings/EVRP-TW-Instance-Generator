@@ -66,15 +66,15 @@ class Perturbation:
 
         mul_cfg = {
             "speed": (0.7, 1.1),
-            "battery_capacity": (0.5, 1.0),
+            "battery_capacity": (0.8, 1.0),
             "consumption_per_distance": (0.8, 1.0),
-            "loading_capacity": (0.5, 1.0),
-            "charging_speed": (0.5, 1.0),
+            "loading_capacity": (0.8, 1.0),
+            "charging_speed": (0.8, 1.0),
             "charging_efficiency": (0.7, 1.0),
         }
 
         add_cfg = {
-            "num_cluster": (-2, 2, True),
+            "num_cluster": (-3, 3, True),
             "working_startTime": (-60, 60, True),
             "working_endTime": (0, 120, True),
         }

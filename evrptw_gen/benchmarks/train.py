@@ -6,6 +6,7 @@ from distutils.util import strtobool
 import pickle
 from evrptw_gen.utils.nodes_generatro_scheduler import NodesGeneratorScheduler
 from evrptw_gen.configs.load_config import Config
+import torch.nn.functional as F
 
 def _mean(x): return float(np.mean(x)) if len(x) else 0.0
 def _max(x):  return float(np.max(x)) if len(x) else 0.0
@@ -43,7 +44,7 @@ def make_env(env_id, seed, cfg=None):
     def thunk():
         env = gym.make(env_id, **cfg)
         env = RecordEpisodeStatistics(env)
-        env.seed(seed)
+        env.seed(int(seed))
         env.action_space.seed(seed)
         env.observation_space.seed(seed)
         return env
@@ -134,12 +135,12 @@ def train(args):
     num_steps = args.num_steps
     num_envs = args.num_envs
 
-    node_generater_scheduler = NodesGeneratorScheduler(min_customer_num=110, max_customer_num=120, cus_per_cs=5)
+    node_generater_scheduler = NodesGeneratorScheduler(min_customer_num=900, max_customer_num=1100, cus_per_cs=10)
     node_generate_policy = "linear" # "linear" / "random"   
     perturb_dict = Config("./evrptw_gen/configs/perturb_config.yaml").setup_env_parameters()
     customer_numbers, charging_stations_numbers = node_generater_scheduler(policy_name=node_generate_policy)
+    scale = 1.0 / (customer_numbers ** 0.5)
 
-    import time
     start = time.time()
     config = Config(args.config_path)
     eval_data = pickle.load(open(args.eval_data_path, "rb"))
@@ -154,15 +155,35 @@ def train(args):
         n_traj_num = args.n_traj
         test_traj_num = args.test_agent
         
-        num_steps = 170
-        num_envs = 96
+        num_steps = 1600
+        num_envs = 64
 
+
+        batch_test_env_id = np.random.choice(
+            num_test_envs, size=eval_batch_size, replace=False
+        )
+        batch_size = len(batch_test_env_id)
+
+        test_envs = SyncVectorEnv(
+            [
+                make_env(
+                    args.env_id,
+                    int(args.seed + i),
+                    cfg={"env_mode": "eval", 
+                        "config": config, 
+                        "n_traj": args.test_agent,
+                        "eval_data": eval_data[i]},   # New Arg
+                )
+                for i in batch_test_env_id
+            ]
+        )
         # args.batch_size = int(num_envs * num_steps)
         # args.minibatch_size = int(args.batch_size // args.num_minibatches)
         # 2. 只在这里创建一套 envs（本 config 共用这一套）
         for update_step in tqdm(range(num_updates)):
             # customer_numbers, charging_stations_numbers, num_steps, num_envs = curriculum_learning_setting(update_step)
             DEBUG_TEST = True
+            t0 = time.time()
             envs = SyncVectorEnv(
                 [
                     make_env(
@@ -197,8 +218,7 @@ def train(args):
             alive = torch.ones(num_envs, args.n_traj, dtype=torch.bool, device=device)
 
             ## Main Logic ##
-            import time
-            t0 = time.time()
+            t1 = time.time()
             for step in range(num_steps):
                 global_step += 1 * num_envs
                 obs[step] = next_obs
@@ -244,8 +264,7 @@ def train(args):
             dones = dones[:valid_step]
             values = values[:valid_step]
             valid_masks = valid_masks[:valid_step]
-            t1 = time.time()
-            print("{} steps cost {:.4f} s".format(step, t1 - t0))
+            t2 = time.time()
 
             args.batch_size = int(num_envs * valid_step)
             args.minibatch_size = int(args.batch_size // args.num_minibatches)
@@ -306,7 +325,7 @@ def train(args):
                         nextnonterminal = 1.0 - dones[t + 1]
                         nextvalues = values[t + 1]  # B x T
 
-                    delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
+                    delta = (rewards[t]) + args.gamma * nextvalues * nextnonterminal - values[t]
                     advantages[t] = lastgaelam = (
                         delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
                     )
@@ -352,7 +371,7 @@ def train(args):
             print(f"[BatchDiag] adv_mean={adv_mean:.4f}, adv_std={adv_std:.4f}, adv_abs_mean={adv_abs:.4f} | "
                 f"ret_mean={ret_mean:.4f}, ret_std={ret_std:.4f} | "
                 f"val_mean={val_mean:.4f}, val_std={val_std:.4f} | "
-                f"explained_var={ev:.3f}")
+                f"explained_var={ev:.6f}")
 
             # Optimizing the policy and value network
             # args.num_minibatches -> decide the mini-batch size: smaller num_minibatches -> larger mini-batch size (large GPU RAM)
@@ -452,16 +471,38 @@ def train(args):
                     pg_loss  = (torch.max(pg_loss1, pg_loss2) * mb_valid).sum() / valid_count
 
                     newvalue = newvalue.view(-1, args.n_traj)
+
+                    delta = newvalue - mb_returns
+                    hubber_unclipped = F.smooth_l1_loss(newvalue, mb_returns, reduction="none", beta = 1.0)
                     if args.clip_vloss:
-                        v_loss_unclipped = (newvalue - mb_returns) ** 2
                         v_clipped = mb_values + torch.clamp(newvalue - mb_values, -args.clip_coef, args.clip_coef)
-                        v_loss_clipped = (v_clipped - mb_returns) ** 2
-                        v_loss = 0.5 * (torch.max(v_loss_unclipped, v_loss_clipped) * mb_valid).sum() / valid_count
+                        huber_clipped = F.smooth_l1_loss(v_clipped, mb_returns, reduction="none", beta=1.0)
+                        v_loss = 0.5 * (torch.max(hubber_unclipped, huber_clipped) * mb_valid).sum() / valid_count
                     else:
-                        v_loss = 0.5 * (((newvalue - mb_returns) ** 2) * mb_valid).sum() / valid_count
+                        v_loss = 0.5 * (hubber_unclipped * mb_valid).sum() / valid_count
+                    # new_v = newvalue * scale
+                    # old_v = mb_values * scale
+                    # ret = mb_returns * scale
+
+                    # if args.clip_vloss:
+                    #     v_loss_unclipped = (new_v - ret) ** 2
+                    #     v_clipped = old_v + torch.clamp(new_v - old_v, -args.clip_coef, args.clip_coef)
+                    #     v_loss_clipped = (v_clipped - mb_returns) ** 2
+                    #     v_loss = 0.5 * (torch.max(v_loss_unclipped, v_loss_clipped) * mb_valid).sum() / valid_count
+                    # else:
+                    #     v_loss = 0.5 * (((new_v - ret) ** 2) * mb_valid).sum() / valid_count
+
+                    # if args.clip_vloss:
+                    #     v_loss_unclipped = (newvalue - mb_returns) ** 2
+                    #     v_clipped = mb_values + torch.clamp(newvalue - mb_values, -args.clip_coef, args.clip_coef)
+                    #     v_loss_clipped = (v_clipped - mb_returns) ** 2
+                    #     v_loss = 0.5 * (torch.max(v_loss_unclipped, v_loss_clipped) * mb_valid).sum() / valid_count
+                    # else:
+                    #     v_loss = 0.5 * (((newvalue - mb_returns) ** 2) * mb_valid).sum() / valid_count
 
                     entropy_loss = entropy.mean()
                     loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
+                    # loss = pg_loss - args.ent_coef * entropy_loss + v_loss * scale
 
                     mb_pg_losses.append(pg_loss.item())
                     mb_v_losses.append(v_loss.item())
@@ -487,6 +528,7 @@ def train(args):
                         gn_backbone = grad_norm(agent.backbone.parameters())
                         gn_critic   = grad_norm(agent.critic.parameters())
                         print(f"[GradSplit pre-clip] backbone={gn_backbone:.6f}, critic={gn_critic:.6f}")
+                        print(f"[Loss] pg_loss={pg_loss:.6f}, entropy_loss={args.ent_coef * entropy_loss:.6f}, value_loss={v_loss * scale:.6f}")
 
                     # ===== 分开裁剪：避免 critic 触发全局 clip 把 backbone 压小 =====
                     pre_backbone = nn.utils.clip_grad_norm_(agent.backbone.parameters(), args.max_grad_norm_backbone)
@@ -509,7 +551,11 @@ def train(args):
 
                 if len(epoch_kls) > 0:
                     print(f"[EpochKL] epoch={epoch} mean_kl={float(np.mean(epoch_kls)):.5f} max_kl={float(np.max(epoch_kls)):.5f}")
-
+            t3 = time.time()
+            print("[Time] "
+                  f"Env Create Time: {t1 - t0:.4f}s |"
+                  f"Rollout Collect Time: {t2 - t1:.4f}s |"
+                  f"Loss & Update :{t3 - t2:.4f}")
             print(
                 "[PPODiag] "
                 f"kl_mean={_mean(mb_kls):.4f}, kl_p90={_p90(mb_kls):.4f}, kl_max={_max(mb_kls):.4f} | "
@@ -524,77 +570,85 @@ def train(args):
             # 建议：在训练主循环里，每隔比如 10 个 update 打一次
             if update_step % 10 == 0:
                 print(f"[AttnScore] scale={agent.backbone.decoder.pointer.scale.item():.4f}, C={agent.backbone.decoder.pointer.C.item():.1f}")
-
-            ## Update Next Environment ##
+                # Update curriculm learning setting
+                customer_numbers, charging_stations_numbers = node_generater_scheduler(policy_name=node_generate_policy)
+            print()
+            # Update Next Environment ##
 
             # A policy to update the customer_numbers and charging_stations_numbers and other env parameters (Curriculum Learning)
-            test_num_cus = 100
-            test_num_cs = 20
+            test_num_cus = 1000
+            test_num_cs = 40
 
-            if (update_step + 1) % 20 == 0:
+            if (update_step + 1) % 50 == 0:
+                t_eval_start = time.time()
                 # Evaluation Process
                 # TRY NOT TO MODIFY: start the game
 
-                del obs, actions, logprobs, rewards, dones, values, advantages, returns  # 举例
-                torch.cuda.empty_cache()
+                # del obs, actions, logprobs, rewards, dones, values, advantages, returns  # 举例
+                # torch.cuda.empty_cache()
 
                 agent.eval()
 
+                # batch_test_env_id = np.random.choice(
+                #     num_test_envs, size=eval_batch_size, replace=False
+                # )
+                # batch_size = len(batch_test_env_id)
+
+                # test_envs = SyncVectorEnv(
+                #     [
+                #         make_env(
+                #             args.env_id,
+                #             int(args.seed + i),
+                #             cfg={"env_mode": "eval", 
+                #                 "config": config, 
+                #                 "n_traj": args.test_agent,
+                #                 "eval_data": eval_data[i]},   # New Arg
+                #         )
+                #         for i in batch_test_env_id
+                #     ]
+                # )
+
                 record_info = []
                 record_action = ['D']
-                record_done_total = np.zeros((num_test_envs, test_traj_num))
-                record_cs_total = np.zeros((num_test_envs, test_traj_num))
+                record_done = np.zeros((batch_size, test_traj_num))
+                record_cs = np.zeros((batch_size, test_traj_num))
+                record_cus = np.zeros((batch_size, test_traj_num))
+                test_obs = test_envs.reset()
+                for step in range(0, 1600):
+                    # ALGO LOGIC: action logic
+                    with torch.no_grad():
+                        action, logits = agent(test_obs)
+                    action = action.to("cpu").numpy()
+                    # TRY NOT TO MODIFY: execute the game and log data.
+                    test_obs, _, test_done, test_info = test_envs.step(action)
+                    finish_idx = (record_done == 0) & (test_done == True)
+                    record_done[finish_idx] = step + 1
+                    record_cs[action> test_num_cus] += 1  # action > 100 means go to CS
+                    record_cus[(action <= test_num_cus) & (action > 0)] += 1
 
-                for i in range(0, num_test_envs, eval_batch_size):
-                    batch_test_env_id = list(range(i, min(i + eval_batch_size, num_test_envs)))
-                    batch_size = len(batch_test_env_id)
-                    test_envs = SyncVectorEnv(
-                        [
-                            make_env(
-                                args.env_id,
-                                args.seed + i,
-                                cfg={"env_mode": "eval", 
-                                    "config": config, 
-                                    "n_traj": args.test_agent,
-                                    "eval_data": eval_data[i]},   # New Arg
-                            )
-                            for i in batch_test_env_id
-                        ]
-                    )
-
-                    record_done = np.zeros((batch_size, test_traj_num))
-                    record_cs = np.zeros((batch_size, test_traj_num))
-                    test_obs = test_envs.reset()
-                    for step in range(0, 2000):
-                        # ALGO LOGIC: action logic
-                        with torch.no_grad():
-                            action, logits = agent(test_obs)
-                        action = action.to("cpu").numpy()
-                        # TRY NOT TO MODIFY: execute the game and log data.
-                        test_obs, _, test_done, test_info = test_envs.step(action)
-                        finish_idx = (record_done == 0) & (test_done == True)
-                        record_done[finish_idx] = step + 1
-                        record_cs[action> test_num_cus] += 1  # action > 100 means go to CS
-
-                        if DEBUG_TEST:
-                            if action[0][0] == 0:
-                                if record_action[-1] == "D":
-                                    DEBUG_TEST = False
-                                else:
-                                    record_action.append("D")
-                            elif action[0][0] > test_num_cus:
-                                record_action.append("R")
+                    if DEBUG_TEST:
+                        if action[0][0] == 0:
+                            if record_action[-1] == "D":
+                                DEBUG_TEST = False
                             else:
-                                record_action.append("C" + str(action[0][0].item()))
+                                record_action.append("D")
+                        elif action[0][0] > test_num_cus:
+                            record_action.append("R")
+                        else:
+                            record_action.append("C" + str(action[0][0].item()))
 
-                        for item in test_info:
-                            if "episode" in item.keys():
-                                record_info.append(item)
+                    for item in test_info:
+                        if "episode" in item.keys():
+                            record_info.append(item)
 
-                        if test_done.all():
+                    if step == 100:
+                        served_cus_ratio = ((record_cus / test_num_cus) <= 0.05)
+                        if served_cus_ratio.all():
+                            print("Early Stop in Evaluation!")
                             break
-                    record_done_total[i:i+len(batch_test_env_id), :] = record_done
-                    record_cs_total[i:i+len(batch_test_env_id), :] = record_cs
+
+                    if test_done.all():
+                        break
                     test_envs.close()
 
                 avg_reward = np.mean([item["episode"]["r"] for item in record_info])
@@ -603,13 +657,12 @@ def train(args):
                 print("Number of Customers:", test_num_cus, "Number of Charging Stations:", test_num_cs)
                 print(f"Evaluation over {len(record_info)} episodes: {avg_reward:.3f}, Step: {step}, Avg Done Step: {record_done.mean().item():.2f}, #CS visited: {record_cs.mean().item():.2f}")
                 print('->'.join(record_action))
+                print("Eval cost : {:.4f}s".format(time.time() - t_eval_start))
                 print("-----------------------------")
 
-                # Update curriculm learning setting
-                customer_numbers, charging_stations_numbers = node_generater_scheduler(policy_name=node_generate_policy)
-                del record_info, record_done_total, record_cs_total  # 这些是 numpy，主要是 CPU 内存
-                torch.cuda.empty_cache()
-            envs.close()
+                # del record_info, record_done_total, record_cs_total  # 这些是 numpy，主要是 CPU 内存
+                # torch.cuda.empty_cache()
+            # envs.close()
 
 
 

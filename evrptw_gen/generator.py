@@ -151,7 +151,7 @@ class InstanceGenerator:
                 save_instances(instances, self.save_path, template="solomon")
             if save_pickle:
                 save_instances(instances, self.save_path, template="pickle")
-            if plot_instance:
+            if plot_instances:
                 instance_save_path = os.path.join(self.save_path, "plot_instances")
                 plot_instance(instances, instance_save_path)
         return instances
