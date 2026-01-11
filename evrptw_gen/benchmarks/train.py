@@ -135,11 +135,19 @@ def train(args):
     num_steps = args.num_steps
     num_envs = args.num_envs
 
-    node_generater_scheduler = NodesGeneratorScheduler(min_customer_num=900, max_customer_num=1100, cus_per_cs=10)
+    node_generater_scheduler = NodesGeneratorScheduler(min_customer_num=1000, max_customer_num=1000, cus_per_cs=25)
     node_generate_policy = "linear" # "linear" / "random"   
     perturb_dict = Config("./evrptw_gen/configs/perturb_config.yaml").setup_env_parameters()
     customer_numbers, charging_stations_numbers = node_generater_scheduler(policy_name=node_generate_policy)
-    scale = 1.0 / (customer_numbers ** 0.5)
+    
+    customer_numbers = 1000
+    charging_stations_numbers = 20
+
+    test_num_cus = 1000
+    test_num_cs = 40
+    test_max_step = 1400
+    
+    num_steps = 1400
 
     start = time.time()
     config = Config(args.config_path)
@@ -151,13 +159,10 @@ def train(args):
         # 1. 选本轮使用的 config_path 和 n_traj
         # config_path = args.config_path[config_iter]
         # n_traj_num = args.n_traj[config_iter]
+        scale = 1.0 / (customer_numbers ** 0.5)
         config_path = args.config_path
         n_traj_num = args.n_traj
         test_traj_num = args.test_agent
-        
-        num_steps = 1600
-        num_envs = 64
-
 
         batch_test_env_id = np.random.choice(
             num_test_envs, size=eval_batch_size, replace=False
@@ -202,7 +207,7 @@ def train(args):
             )
 
             obs = [None] * num_steps
-            actions = torch.zeros((num_steps, num_envs) + envs.single_action_space.shape).to(device)
+            actions = torch.zeros((num_steps, num_envs) + envs.single_action_space.shape, dtype=torch.int16).to(device)
             logprobs = torch.zeros((num_steps, num_envs, args.n_traj)).to(device)
             rewards = torch.zeros((num_steps, num_envs, args.n_traj)).to(device)
             dones = torch.zeros((num_steps, num_envs, args.n_traj)).to(device)
@@ -568,17 +573,13 @@ def train(args):
 
             
             # 建议：在训练主循环里，每隔比如 10 个 update 打一次
-            if update_step % 10 == 0:
+            if update_step % 5 == 0:
                 print(f"[AttnScore] scale={agent.backbone.decoder.pointer.scale.item():.4f}, C={agent.backbone.decoder.pointer.C.item():.1f}")
                 # Update curriculm learning setting
-                customer_numbers, charging_stations_numbers = node_generater_scheduler(policy_name=node_generate_policy)
             print()
             # Update Next Environment ##
 
             # A policy to update the customer_numbers and charging_stations_numbers and other env parameters (Curriculum Learning)
-            test_num_cus = 1000
-            test_num_cs = 40
-
             if (update_step + 1) % 50 == 0:
                 t_eval_start = time.time()
                 # Evaluation Process
@@ -614,7 +615,7 @@ def train(args):
                 record_cs = np.zeros((batch_size, test_traj_num))
                 record_cus = np.zeros((batch_size, test_traj_num))
                 test_obs = test_envs.reset()
-                for step in range(0, 1600):
+                for step in range(0, test_max_step):
                     # ALGO LOGIC: action logic
                     with torch.no_grad():
                         action, logits = agent(test_obs)
@@ -659,7 +660,7 @@ def train(args):
                 print('->'.join(record_action))
                 print("Eval cost : {:.4f}s".format(time.time() - t_eval_start))
                 print("-----------------------------")
-
+                customer_numbers, charging_stations_numbers = node_generater_scheduler(policy_name=node_generate_policy)
                 # del record_info, record_done_total, record_cs_total  # 这些是 numpy，主要是 CPU 内存
                 # torch.cuda.empty_cache()
             # envs.close()
