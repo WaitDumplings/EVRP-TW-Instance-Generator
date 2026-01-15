@@ -141,25 +141,25 @@ def train(args):
     timestamp = time.strftime("%Y%m%d-%H%M%s")
     save_dir = os.path.join(args.save_dir, timestamp)
     os.makedirs(save_dir, exist_ok=True)
-    best_reward = -float("-inf")
+    best_reward = float("-inf")
 
     # num_updates = args.total_timesteps // args.batch_size
     num_steps = args.num_steps
     num_envs = args.num_envs
 
-    node_generater_scheduler = NodesGeneratorScheduler(min_customer_num=1000, max_customer_num=1000, cus_per_cs=25)
+    node_generater_scheduler = NodesGeneratorScheduler(min_customer_num=100, max_customer_num=100, cus_per_cs=5)
     node_generate_policy = "linear" # "linear" / "random"   
     perturb_dict = Config("./evrptw_gen/configs/perturb_config.yaml").setup_env_parameters()
     customer_numbers, charging_stations_numbers = node_generater_scheduler(policy_name=node_generate_policy)
     
-    customer_numbers = 1000
+    customer_numbers = 100
     charging_stations_numbers = 20
 
-    test_num_cus = 1000
-    test_num_cs = 40
-    test_max_step = 1300
+    test_num_cus = 100
+    test_num_cs = 20
+    test_max_step = 150
     
-    num_steps = 1300
+    num_steps = 150
 
     start = time.time()
     config = Config(args.config_path)
@@ -604,7 +604,7 @@ def train(args):
             # Update Next Environment ##
 
             # A policy to update the customer_numbers and charging_stations_numbers and other env parameters (Curriculum Learning)
-            if (update_step + 1) % 50 == 0:
+            if (update_step + 1) % 10 == 0:
                 t_eval_start = time.time()
                 # Evaluation Process
                 # TRY NOT TO MODIFY: start the game
@@ -683,6 +683,7 @@ def train(args):
                 print(f"Evaluation over {len(record_info)} episodes: {avg_reward:.3f}, Step: {step}, Avg Done Step: {record_done.mean().item():.2f}, #CS visited: {record_cs.mean().item():.2f}")
                 print('->'.join(record_action))
                 print("Eval cost : {:.4f}s".format(time.time() - t_eval_start))
+                breakpoint()
                 if avg_reward > best_reward and len(record_info) == len(batch_test_env_id):
                     best_reward = avg_reward
                     torch.save(agent.state_dict(), os.path.join(save_dir, "best_model.pth"))
