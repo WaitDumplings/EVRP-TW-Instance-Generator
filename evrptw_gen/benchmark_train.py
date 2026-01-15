@@ -105,7 +105,7 @@ def parse_args():
     parser.add_argument(
         "--learning-rate",
         type=float,
-        default=1e-5,
+        default=3e-5,
         help="the learning rate of the optimizer",
     )
     parser.add_argument("--critic-lr", type=float, default=3e-5)
@@ -119,7 +119,7 @@ def parse_args():
     parser.add_argument(
         "--num-envs",
         type=int,
-        default=64,
+        default=132,
         help="the number of parallel game environments",
     )
     parser.add_argument(
@@ -148,17 +148,17 @@ def parse_args():
         default=0.95,
         help="the lambda for the general advantage estimation",
     )
-    # cuda 0: 32 | cuda 1: 16
+
     parser.add_argument(
         "--num-minibatches",
         type=int,
-        default=32,
+        default=132,
         help="the number of mini-batches",
     )
     parser.add_argument(
         "--update-epochs",
         type=int,
-        default=1,
+        default=2,
         help="the K epochs to update the policy",
     )
     parser.add_argument(
@@ -218,7 +218,7 @@ def parse_args():
     parser.add_argument(
         "--n-traj",
         type=int,
-        default=4,
+        default=12,
         help="number of trajectories(players) in a vectorized sub-environment",
     )
     parser.add_argument(
@@ -256,6 +256,7 @@ def parse_args():
     parser.add_argument("--lambda_lr_down", type=float, default=2.0, help="dual descent step size when fail_rate < target_fail (constraint over-satisfied)")
     parser.add_argument("--lambda_tolerance", type=float, default=0.05, help="tolerance band around target_fail where lambda is not updated")
     parser.add_argument("--env_mode", type=str, default="train", help="env mode: train / eval")
+    parser.add_argument("--accum_steps", type=int, default=8, help="accum grad steps for updating parametes")
     parser.add_argument("--eval_batch_size", type=int, default=64, help="the batch size for evaluation")
     parser.add_argument("--eval_data_path", type=str, default="./eval_data_1000/pickle/evrptw_1000C_40R.pkl", help="path to evaluation data when eval_env_mode is solomon_txt")
     parser.add_argument(
