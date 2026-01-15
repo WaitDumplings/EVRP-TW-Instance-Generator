@@ -138,6 +138,11 @@ def train(args):
     test_envs = None
     config_iter_number = 1  # 或更多
     num_updates = 5000
+    timestamp = time.strftime("%Y%m%d-%H%M%s")
+    save_dir = os.path.join(args.save_dir, timestamp)
+    os.makedirs(save_dir, exist_ok=True)
+    best_reward = -float("-inf")
+
     # num_updates = args.total_timesteps // args.batch_size
     num_steps = args.num_steps
     num_envs = args.num_envs
@@ -678,6 +683,10 @@ def train(args):
                 print(f"Evaluation over {len(record_info)} episodes: {avg_reward:.3f}, Step: {step}, Avg Done Step: {record_done.mean().item():.2f}, #CS visited: {record_cs.mean().item():.2f}")
                 print('->'.join(record_action))
                 print("Eval cost : {:.4f}s".format(time.time() - t_eval_start))
+                if avg_reward > best_reward and len(record_info) == len(batch_test_env_id):
+                    best_reward = avg_reward
+                    torch.save(agent.state_dict(), os.path.join(save_dir, "best_model.pth"))
+                torch.save(agent.state_dict(), os.path.join(save_dir, "cur_model.pth"))
                 print("-----------------------------")
                 customer_numbers, charging_stations_numbers = node_generater_scheduler(policy_name=node_generate_policy)
                 # del record_info, record_done_total, record_cs_total  # 这些是 numpy，主要是 CPU 内存
