@@ -4,8 +4,9 @@ import numpy as np
 from tqdm import tqdm
 from distutils.util import strtobool
 import pickle
-from evrptw_gen.utils.nodes_generatro_scheduler import NodesGeneratorScheduler
+from evrptw_gen.utils.nodes_generator_scheduler import NodesGeneratorScheduler
 from evrptw_gen.configs.load_config import Config
+import torch.nn.functional as F
 
 def _mean(x): return float(np.mean(x)) if len(x) else 0.0
 def _max(x):  return float(np.max(x)) if len(x) else 0.0
@@ -43,7 +44,7 @@ def make_env(env_id, seed, cfg=None):
     def thunk():
         env = gym.make(env_id, **cfg)
         env = RecordEpisodeStatistics(env)
-        env.seed(seed)
+        env.seed(int(seed))
         env.action_space.seed(seed)
         env.observation_space.seed(seed)
         return env
@@ -81,6 +82,13 @@ def train(args):
     # Register the environment.
     # Note: entry_point must be a fully-qualified import path 
     # (details explained in the discussion above).
+
+    # Print Args
+    print("---------------- Training Info ---------------------")
+    for key, value in vars(args).items():
+        print(key, value)
+    print("----------------------------------------------------")
+
     gym.envs.register(
         id=args.env_id,
         entry_point=args.env_entry_point,
@@ -127,43 +135,78 @@ def train(args):
     # 1: for config (决定instance difficulty)
     # 2: for cus / cs size (选择好此时batch的cus / cs size)
     # 3: for iter: (训练次数 + PPO)
-    eval_method = args.eval_method
     test_envs = None
     config_iter_number = 1  # 或更多
-    num_updates = 500
+    num_updates = 5000
+    timestamp = time.strftime("%Y%m%d-%H%M%s")
+    save_dir = os.path.join(args.save_dir, timestamp)
+    os.makedirs(save_dir, exist_ok=True)
+    best_reward = float("-inf")
+
     # num_updates = args.total_timesteps // args.batch_size
     num_steps = args.num_steps
     num_envs = args.num_envs
 
-    node_generater_scheduler = NodesGeneratorScheduler(min_customer_num=80, max_customer_num=120, cus_per_cs=5)
+    node_generater_scheduler = NodesGeneratorScheduler(min_customer_num=100, max_customer_num=100, cus_per_cs=5)
     node_generate_policy = "linear" # "linear" / "random"   
     perturb_dict = Config("./evrptw_gen/configs/perturb_config.yaml").setup_env_parameters()
     customer_numbers, charging_stations_numbers = node_generater_scheduler(policy_name=node_generate_policy)
+    
+    customer_numbers = 100
+    charging_stations_numbers = 20
+
+    test_num_cus = 100
+    test_num_cs = 20
+    test_max_step = 150
+    
+    num_steps = 150
+
+    start = time.time()
+    config = Config(args.config_path)
+    eval_data = pickle.load(open(args.eval_data_path, "rb"))
+    num_test_envs = len(eval_data)
+    eval_batch_size = args.eval_batch_size
 
     for config_iter in range(config_iter_number):
         # 1. 选本轮使用的 config_path 和 n_traj
         # config_path = args.config_path[config_iter]
         # n_traj_num = args.n_traj[config_iter]
+        scale = 1.0 / (customer_numbers ** 0.5)
         config_path = args.config_path
         n_traj_num = args.n_traj
         test_traj_num = args.test_agent
 
+        batch_test_env_id = np.random.choice(
+            num_test_envs, size=eval_batch_size, replace=False
+        )
+        batch_size = len(batch_test_env_id)
 
-        num_steps = 170
-        num_envs = 96
-
+        test_envs = SyncVectorEnv(
+            [
+                make_env(
+                    args.env_id,
+                    int(args.seed + i),
+                    cfg={"env_mode": "eval", 
+                        "config": config, 
+                        "n_traj": args.test_agent,
+                        "eval_data": eval_data[i]},   # New Arg
+                )
+                for i in batch_test_env_id
+            ]
+        )
         # args.batch_size = int(num_envs * num_steps)
         # args.minibatch_size = int(args.batch_size // args.num_minibatches)
         # 2. 只在这里创建一套 envs（本 config 共用这一套）
         for update_step in tqdm(range(num_updates)):
             # customer_numbers, charging_stations_numbers, num_steps, num_envs = curriculum_learning_setting(update_step)
             DEBUG_TEST = True
+            t0 = time.time()
             envs = SyncVectorEnv(
                 [
                     make_env(
                         args.env_id,
                         args.seed + i,
-                        cfg={"config_path": config_path, 
+                        cfg={"config": config, 
                              "n_traj": n_traj_num, 
                              "num_customers": customer_numbers, 
                              "num_charging_stations": charging_stations_numbers,
@@ -176,7 +219,7 @@ def train(args):
             )
 
             obs = [None] * num_steps
-            actions = torch.zeros((num_steps, num_envs) + envs.single_action_space.shape).to(device)
+            actions = torch.zeros((num_steps, num_envs) + envs.single_action_space.shape, dtype=torch.int16).to(device)
             logprobs = torch.zeros((num_steps, num_envs, args.n_traj)).to(device)
             rewards = torch.zeros((num_steps, num_envs, args.n_traj)).to(device)
             dones = torch.zeros((num_steps, num_envs, args.n_traj)).to(device)
@@ -191,11 +234,8 @@ def train(args):
             next_done = torch.zeros(num_envs, args.n_traj).to(device)
             alive = torch.ones(num_envs, args.n_traj, dtype=torch.bool, device=device)
 
-            r = []
-
             ## Main Logic ##
-            import time
-            t0 = time.time()
+            t1 = time.time()
             for step in range(num_steps):
                 global_step += 1 * num_envs
                 obs[step] = next_obs
@@ -241,8 +281,7 @@ def train(args):
             dones = dones[:valid_step]
             values = values[:valid_step]
             valid_masks = valid_masks[:valid_step]
-            t1 = time.time()
-            print("{} steps cost {:.4f} s".format(step, t1 - t0))
+            t2 = time.time()
 
             args.batch_size = int(num_envs * valid_step)
             args.minibatch_size = int(args.batch_size // args.num_minibatches)
@@ -303,7 +342,7 @@ def train(args):
                         nextnonterminal = 1.0 - dones[t + 1]
                         nextvalues = values[t + 1]  # B x T
 
-                    delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
+                    delta = (rewards[t]) + args.gamma * nextvalues * nextnonterminal - values[t]
                     advantages[t] = lastgaelam = (
                         delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
                     )
@@ -349,7 +388,7 @@ def train(args):
             print(f"[BatchDiag] adv_mean={adv_mean:.4f}, adv_std={adv_std:.4f}, adv_abs_mean={adv_abs:.4f} | "
                 f"ret_mean={ret_mean:.4f}, ret_std={ret_std:.4f} | "
                 f"val_mean={val_mean:.4f}, val_std={val_std:.4f} | "
-                f"explained_var={ev:.3f}")
+                f"explained_var={ev:.6f}")
 
             # Optimizing the policy and value network
             # args.num_minibatches -> decide the mini-batch size: smaller num_minibatches -> larger mini-batch size (large GPU RAM)
@@ -381,29 +420,45 @@ def train(args):
 
                 b_advantages = (b_advantages - adv_mean) / adv_std
                 b_advantages = b_advantages * b_valid_masks
-
+                
             stop_early = False
+
+            # ---------- Gradient Accumulation Config ----------
+            accum_steps = int(getattr(args, "accum_steps", 4))
+            accum_steps = max(1, accum_steps)
 
             for epoch in range(args.update_epochs):
                 if stop_early:
                     break
 
                 np.random.shuffle(envinds)
-
                 epoch_kls = []  # 用于 early-stop
+
+                # ====== 初始化：每个 epoch 开始先清 grad ======
+                optim_backbone.zero_grad(set_to_none=True)
+                optim_critic.zero_grad(set_to_none=True)
+
+                # 计数：累计了多少个 minibatch 的梯度
+                accum_counter = 0
+
+                # 你原来 mb_grad_norms_* 是按 minibatch append；累积后更合理的是按 “真实 step” append
+                step_grad_norms_backbone = []
+                step_grad_norms_critic = []
 
                 for start in range(0, num_envs, envsperbatch):
                     end = start + envsperbatch
-
                     mbenvinds = envinds[start:end]
+
                     mb_inds = flatinds[:, mbenvinds].ravel()
                     r_inds = np.tile(np.arange(envsperbatch), valid_step)
 
+                    # 重新 encode 该 env 的初始 embedding（你原逻辑）
                     cur_obs = {k: v[mbenvinds] for k, v in obs[0].items()}
                     encoder_state = agent.backbone.encode(cur_obs)
 
                     mb_valid = b_valid_masks[mb_inds]  # [Mb, n_traj] bool
 
+                    # forward: 取新 logprob / entropy / value
                     _, newlogprob, entropy, newvalue, _ = agent.get_action_and_value_cached(
                         {k: v[mb_inds] for k, v in b_obs.items()},
                         b_actions.long()[mb_inds],
@@ -440,22 +495,29 @@ def train(args):
 
                     valid_count = mb_valid.sum()
                     mb_valid_ratios.append((valid_count.float() / mb_valid.numel()).item())
+
                     if valid_count == 0:
+                        # 注意：这里不能 step，但也不应破坏累积逻辑
+                        # 如果你希望“空 minibatch 也计入 accum_counter”，通常不推荐（会稀释有效梯度）
                         continue
+
                     valid_count = valid_count.float()
 
+                    # policy loss
                     pg_loss1 = -mb_advantages * ratio
                     pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
                     pg_loss  = (torch.max(pg_loss1, pg_loss2) * mb_valid).sum() / valid_count
 
+                    # value loss (Huber + optional clip)
                     newvalue = newvalue.view(-1, args.n_traj)
+
+                    huber_unclipped = F.smooth_l1_loss(newvalue, mb_returns, reduction="none", beta=1.0)
                     if args.clip_vloss:
-                        v_loss_unclipped = (newvalue - mb_returns) ** 2
                         v_clipped = mb_values + torch.clamp(newvalue - mb_values, -args.clip_coef, args.clip_coef)
-                        v_loss_clipped = (v_clipped - mb_returns) ** 2
-                        v_loss = 0.5 * (torch.max(v_loss_unclipped, v_loss_clipped) * mb_valid).sum() / valid_count
+                        huber_clipped = F.smooth_l1_loss(v_clipped, mb_returns, reduction="none", beta=1.0)
+                        v_loss = 0.5 * (torch.max(huber_unclipped, huber_clipped) * mb_valid).sum() / valid_count
                     else:
-                        v_loss = 0.5 * (((newvalue - mb_returns) ** 2) * mb_valid).sum() / valid_count
+                        v_loss = 0.5 * (huber_unclipped * mb_valid).sum() / valid_count
 
                     entropy_loss = entropy.mean()
                     loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
@@ -465,13 +527,13 @@ def train(args):
                     mb_entropies.append(entropy_loss.item())
                     mb_total_losses.append(loss.item())
 
-                    # ===== 反传：两个 optimizer 分开 zero_grad / clip / step =====
-                    optim_backbone.zero_grad(set_to_none=True)
-                    optim_critic.zero_grad(set_to_none=True)
-                    loss.backward()
+                    # ---------- Gradient Accumulation Backward ----------
+                    # 保持等效学习率：把 loss 按 accum_steps 缩放
+                    (loss / accum_steps).backward()
+                    accum_counter += 1
 
-                    # 只在每个 update 的第一个 minibatch 打一次 GradSplit（你原逻辑保留）
-                    if epoch == 0 and start == 0:
+                    # 只在每个 update 的第一个“有效 minibatch”打一次 GradSplit
+                    if epoch == 0 and accum_counter == 1:
                         def grad_norm(params):
                             tot = 0.0
                             for p in params:
@@ -484,29 +546,45 @@ def train(args):
                         gn_backbone = grad_norm(agent.backbone.parameters())
                         gn_critic   = grad_norm(agent.critic.parameters())
                         print(f"[GradSplit pre-clip] backbone={gn_backbone:.6f}, critic={gn_critic:.6f}")
+                        print(f"[Loss] pg_loss={pg_loss:.6f}, entropy_loss={args.ent_coef * entropy_loss:.6f}, value_loss={v_loss * scale:.6f}")
 
-                    # ===== 分开裁剪：避免 critic 触发全局 clip 把 backbone 压小 =====
-                    pre_backbone = nn.utils.clip_grad_norm_(agent.backbone.parameters(), args.max_grad_norm_backbone)
-                    pre_critic   = nn.utils.clip_grad_norm_(agent.critic.parameters(),   args.max_grad_norm_critic)
+                    # ---------- Decide whether to step ----------
+                    is_last_minibatch = (start + envsperbatch) >= num_envs
+                    do_step = (accum_counter % accum_steps == 0) or is_last_minibatch
 
-                    # 记录一下（注意这是 pre-clip norm）
-                    mb_grad_norms_backbone.append(float(pre_backbone))
-                    mb_grad_norms_critic.append(float(pre_critic))
+                    if do_step:
+                        # clip on accumulated grads
+                        pre_backbone = nn.utils.clip_grad_norm_(agent.backbone.parameters(), args.max_grad_norm_backbone)
+                        pre_critic   = nn.utils.clip_grad_norm_(agent.critic.parameters(),   args.max_grad_norm_critic)
 
-                    optim_backbone.step()
-                    optim_critic.step()
+                        step_grad_norms_backbone.append(float(pre_backbone))
+                        step_grad_norms_critic.append(float(pre_critic))
+
+                        optim_backbone.step()
+                        optim_critic.step()
+
+                        optim_backbone.zero_grad(set_to_none=True)
+                        optim_critic.zero_grad(set_to_none=True)
+
+                # 把“真实 step”的 grad norm 统计并入你原来的数组（这样 PPODiag 仍然能打印）
+                # 注意：这里 append 的数量会比原先少（因为一个 step 对应 accum_steps 个 minibatch）
+                mb_grad_norms_backbone.extend(step_grad_norms_backbone)
+                mb_grad_norms_critic.extend(step_grad_norms_critic)
 
                 # ===== epoch 级 early-stop（target_kl）=====
                 if args.target_kl is not None and len(epoch_kls) > 0:
                     mean_kl = float(np.mean(epoch_kls))
                     if mean_kl > args.target_kl:
                         stop_early = True
-                        # 打印一下，便于你做长实验分析
                         print(f"[EarlyStop] epoch={epoch} mean_kl={mean_kl:.5f} > target_kl={args.target_kl:.5f}")
 
                 if len(epoch_kls) > 0:
                     print(f"[EpochKL] epoch={epoch} mean_kl={float(np.mean(epoch_kls)):.5f} max_kl={float(np.max(epoch_kls)):.5f}")
-
+            t3 = time.time()
+            print("[Time] "
+                  f"Env Create Time: {t1 - t0:.4f}s |"
+                  f"Rollout Collect Time: {t2 - t1:.4f}s |"
+                  f"Loss & Update :{t3 - t2:.4f}")
             print(
                 "[PPODiag] "
                 f"kl_mean={_mean(mb_kls):.4f}, kl_p90={_p90(mb_kls):.4f}, kl_max={_max(mb_kls):.4f} | "
@@ -519,69 +597,60 @@ def train(args):
 
             
             # 建议：在训练主循环里，每隔比如 10 个 update 打一次
-            if update_step % 10 == 0:
+            if update_step % 5 == 0:
                 print(f"[AttnScore] scale={agent.backbone.decoder.pointer.scale.item():.4f}, C={agent.backbone.decoder.pointer.C.item():.1f}")
-
-            ## Update Next Environment ##
+                # Update curriculm learning setting
+            print()
+            # Update Next Environment ##
 
             # A policy to update the customer_numbers and charging_stations_numbers and other env parameters (Curriculum Learning)
-            test_num_cus = 100
-            test_num_cs = 20
-
             if (update_step + 1) % 10 == 0:
+                t_eval_start = time.time()
                 # Evaluation Process
-                if eval_method == "generator":
-                    num_test_envs = num_envs
-                    test_envs = SyncVectorEnv(
-                        [
-                            make_env(
-                                args.env_id,
-                                args.seed + i,
-                                cfg={"env_mode": "eval", 
-                                    "eval_mode": eval_method,   # generator / solomon_txt
-                                    "config_path": config_path, 
-                                    "n_traj": test_traj_num, 
-                                    "num_customers": test_num_cus, 
-                                    "num_charging_stations": test_num_cs},
-                            )
-                            for i in range(num_test_envs)
-                        ]
-                    )
-                else:
-                    if test_envs is None:
-                        num_test_envs = len(pickle.load(open(args.eval_data_path, "rb")))
-                        test_envs = SyncVectorEnv(
-                            [
-                                make_env(
-                                    args.env_id,
-                                    args.seed + i,
-                                    cfg={"env_mode": "eval", 
-                                        "eval_mode": eval_method,   # fixed / solomon_txt
-                                        "config_path": config_path, 
-                                        "n_traj": test_traj_num,
-                                        "ins_index": i,
-                                        "eval_data_path": args.eval_data_path},   # New Arg
-                                )
-                                for i in range(num_test_envs)
-                            ]
-                        )
-
                 # TRY NOT TO MODIFY: start the game
+
+                # del obs, actions, logprobs, rewards, dones, values, advantages, returns  # 举例
+                # torch.cuda.empty_cache()
+
                 agent.eval()
-                test_obs = test_envs.reset()
-                r = []
-                record_done = np.zeros((num_test_envs, test_traj_num))
-                record_cs = np.zeros((num_test_envs, test_traj_num))
+
+                # batch_test_env_id = np.random.choice(
+                #     num_test_envs, size=eval_batch_size, replace=False
+                # )
+                # batch_size = len(batch_test_env_id)
+
+                # test_envs = SyncVectorEnv(
+                #     [
+                #         make_env(
+                #             args.env_id,
+                #             int(args.seed + i),
+                #             cfg={"env_mode": "eval", 
+                #                 "config": config, 
+                #                 "n_traj": args.test_agent,
+                #                 "eval_data": eval_data[i]},   # New Arg
+                #         )
+                #         for i in batch_test_env_id
+                #     ]
+                # )
+
+                record_info = []
                 record_action = ['D']
-                for step in range(0, 300):
+                record_done = np.zeros((batch_size, test_traj_num))
+                record_cs = np.zeros((batch_size, test_traj_num))
+                record_cus = np.zeros((batch_size, test_traj_num))
+                test_obs = test_envs.reset()
+                for step in range(0, test_max_step):
                     # ALGO LOGIC: action logic
                     with torch.no_grad():
                         action, logits = agent(test_obs)
+                    action = action.to("cpu").numpy()
                     # TRY NOT TO MODIFY: execute the game and log data.
-                    test_obs, _, test_done, test_info = test_envs.step(action.cpu().numpy())
+                    test_obs, _, test_done, test_info = test_envs.step(action)
                     finish_idx = (record_done == 0) & (test_done == True)
                     record_done[finish_idx] = step + 1
-                    record_cs[action.cpu().numpy()> test_num_cus] += 1  # action > 100 means go to CS
+                    record_cs[action> test_num_cus] += 1  # action > 100 means go to CS
+                    record_cus[(action <= test_num_cus) & (action > 0)] += 1
+
                     if DEBUG_TEST:
                         if action[0][0] == 0:
                             if record_action[-1] == "D":
@@ -595,26 +664,35 @@ def train(args):
 
                     for item in test_info:
                         if "episode" in item.keys():
-                            r.append(item)
+                            record_info.append(item)
+
+                    if step == 100:
+                        served_cus_ratio = ((record_cus / test_num_cus) <= 0.05)
+                        if served_cus_ratio.all():
+                            print("Early Stop in Evaluation!")
+                            break
 
                     if test_done.all():
                         break
+                    test_envs.close()
 
-                avg_reward = np.mean([item["episode"]["r"] for item in r])
+                avg_reward = np.mean([item["episode"]["r"] for item in record_info])
+
                 print("----- Evaluation Result -----")
                 print("Number of Customers:", test_num_cus, "Number of Charging Stations:", test_num_cs)
-                print(f"Evaluation over {len(r)} episodes: {avg_reward:.3f}, Step: {step}, Avg Done Step: {record_done.mean().item():.2f}, #CS visited: {record_cs.mean().item():.2f}")
+                print(f"Evaluation over {len(record_info)} episodes: {avg_reward:.3f}, Step: {step}, Avg Done Step: {record_done.mean().item():.2f}, #CS visited: {record_cs.mean().item():.2f}")
                 print('->'.join(record_action))
+                print("Eval cost : {:.4f}s".format(time.time() - t_eval_start))
+                breakpoint()
+                if avg_reward > best_reward and len(record_info) == len(batch_test_env_id):
+                    best_reward = avg_reward
+                    torch.save(agent.state_dict(), os.path.join(save_dir, "best_model.pth"))
+                torch.save(agent.state_dict(), os.path.join(save_dir, "cur_model.pth"))
                 print("-----------------------------")
-
-                # Update curriculm learning setting
                 customer_numbers, charging_stations_numbers = node_generater_scheduler(policy_name=node_generate_policy)
-
-                if eval_method == "generator":
-                    test_envs.close()
-            if eval_method == "solomon_txt":
-                test_envs.close()
-            envs.close()
+                # del record_info, record_done_total, record_cs_total  # 这些是 numpy，主要是 CPU 内存
+                # torch.cuda.empty_cache()
+            # envs.close()
 
 
 

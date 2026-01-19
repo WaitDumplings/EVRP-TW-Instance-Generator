@@ -481,7 +481,6 @@ class CustomerPositionPolicies:
 
         if choice not in cls.REGISTRY:
             raise ValueError(f"Unknown instance_type: {choice}")
-        choice = "RC"
         env["instance_type"] = choice  # record sampled type for reference/logging
         return cls.REGISTRY[choice](env)
 

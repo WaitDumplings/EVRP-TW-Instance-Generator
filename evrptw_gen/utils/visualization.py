@@ -77,8 +77,10 @@ def save_instances(instances, save_path, template='solomon'):
             # keep units consistent with the file (hours)
             ws = env.get("working_startTime", env.get("working_start_time", None))
             we = env.get("working_endTime", env.get("working_end_time", None))
+            ie = env.get("instance_endTime", None)
             working_start_h = None if ws is None else float(ws) / 60.0
             working_end_h   = None if we is None else float(we) / 60.0
+            instance_end_h = None if ie is None else float(ie) / 60.0
 
             service_time_type = env.get("service_time_type", None)
             demand_type       = env.get("demand_type", None)  
@@ -88,9 +90,11 @@ def save_instances(instances, save_path, template='solomon'):
 
             save_name = os.path.join(save_path_solomon, save_file_name)
 
-            check = fast_check(charging_station_pos, depot_pos, Q, r)
-            if not check:
-                save_name = os.path.join(save_path_solomon, "target.txt")
+            ## FOR DEBUGGING ONLY: fast check if all CS can reach depot
+            # check = fast_check(charging_station_pos, depot_pos, Q, r)
+            # if not check:
+            #     save_name = os.path.join(save_path_solomon, "target.txt")
+            
             with open(save_name, "w") as f:
                 # Header
                 f.write("StringID   Type       x          y          demand     ReadyTime  DueDate    ServiceTime\n")
@@ -146,6 +150,7 @@ def save_instances(instances, save_path, template='solomon'):
                 f.write(f"number of clusters /{num_cluster}/\n")
                 f.write(f"working_startTime (hour) /{format(working_start_h, '.2f') if working_start_h is not None else 'None'}/\n")
                 f.write(f"working_endTime (hour) /{format(working_end_h, '.2f') if working_end_h is not None else 'None'}/\n")
+                f.write(f"instance_endTime (hour) /{format(instance_end_h, '.2f') if instance_end_h is not None else 'None'}/\n")
                 f.write(f"service_time_type /{service_time_type}/\n")
                 f.write(f"demand_type /{demand_type}/\n")
                 f.write(f"instance_type /{instance_type}/\n")

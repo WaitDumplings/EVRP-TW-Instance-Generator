@@ -23,8 +23,8 @@ if PARENT_DIR not in sys.path:
 # -------------------------------------------------------------------
 # 2) 现在可以安全导入 benchmarks/train.py 
 # -------------------------------------------------------------------
-from evrptw_gen.benchmarks.train import train
-from evrptw_gen.benchmark_train import parse_args  # 可复用你已有的 argparse 配置
+from evrptw_gen.benchmarks.DRL_Solver.train import train
+from evrptw_gen.benchmarks.DRL_Solver.benchmark_train import parse_args  # 可复用你已有的 argparse 配置
 
 
 # -------------------------------------------------------------------

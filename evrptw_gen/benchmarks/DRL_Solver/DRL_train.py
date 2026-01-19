@@ -3,17 +3,7 @@
 import os
 import argparse
 from distutils.util import strtobool
-
-# 1) 设定 GPU 可见性（可根据需要调整/删除）
-# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-
-# 2) 从 benchmarks/train.py 导入 train 函数
-# 方法一：包内绝对导入（推荐，清晰）
-from evrptw_gen.benchmarks.train import train
-
-# 如果你以后想把包名改掉，可以用相对导入（但运行时一定要用 -m）：
-# from .benchmarks.train import train
-
+from train import train
 
 def parse_args():
     # fmt: off
