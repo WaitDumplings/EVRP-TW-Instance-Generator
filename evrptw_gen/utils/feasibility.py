@@ -112,7 +112,7 @@ def cs_min_time_to_depot(
         
         # (directly) depot → candidate cs
         time_travel_depot_candidate = d_cd / speed
-        time_charge_depot_candidate = (time_travel_depot_candidate * speed) * cpd / p_eff  # recharge energy used during this leg
+        time_charge_depot_candidate = d_cd * cpd / p_eff  # recharge energy used during this leg
         time_depot_candidate = time_travel_depot_candidate + time_charge_depot_candidate
 
         # (directly) feasible
@@ -192,7 +192,7 @@ def cus_min_time_to_depot(
         # Compute leg-level travel times and energy consumption
         # ----------------------------
         time_cus_to_cs = dist_vec(candidate_cus_pos, css_pos) / speed          # (C, 1+S), Cus→CS
-        time_cs_to_cus = dist_vec(css_pos, candidate_cus_pos) / speed          # (1+S, C), CS→Cus
+        time_cs_to_cus = time_cus_to_cs.transpose((1, 0))                     # (1+S, C), CS→Cus
 
         # Total energy consumption for CS₁→Cus→CS₂
         soc_cs_to_cs = (time_cs_to_cus[:, :, None] + time_cus_to_cs[None, :, :]) * speed * cpd  # (1+S, C, 1+S)

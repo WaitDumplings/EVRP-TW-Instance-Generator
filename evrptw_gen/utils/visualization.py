@@ -87,6 +87,10 @@ def save_instances(instances, save_path, template='solomon'):
  
 
             save_name = os.path.join(save_path_solomon, save_file_name)
+
+            check = fast_check(charging_station_pos, depot_pos, Q, r)
+            if not check:
+                save_name = os.path.join(save_path_solomon, "target.txt")
             with open(save_name, "w") as f:
                 # Header
                 f.write("StringID   Type       x          y          demand     ReadyTime  DueDate    ServiceTime\n")
@@ -153,7 +157,7 @@ def save_instances(instances, save_path, template='solomon'):
                 # Decide unit label; you can change this to "min" if your env stores minutes.
                 cs_ttd = np.asarray(cs_ttd, dtype=float).reshape(-1)
                 # Write as a compact comma-separated list (stable & easy to parse)
-                cs_ttd_str = ",".join(f"{x:.6f}" for x in cs_ttd.tolist())
+                cs_ttd_str = ",".join(f"{x}" for x in cs_ttd.tolist())
                 f.write(f"cs_time_to_depot (hour)/[{cs_ttd_str}]/\n")
             
             print(f"✅ Saved: {save_name}")
@@ -176,6 +180,15 @@ def save_instances(instances, save_path, template='solomon'):
         with open(check_extension(filedir), 'wb') as f:
             pickle.dump(instances, f, pickle.HIGHEST_PROTOCOL)
 
+def fast_check(cs_pos, depot_pos, battery_capacity, consume_rate):
+    """Quickly check which charging stations can directly reach the depot."""
+    cs_pos_arr = _to_2d_points(cs_pos)
+    depot_pos_arr = _to_2d_points(depot_pos).reshape(1, 2)  # (1,2)
+
+    dists = np.linalg.norm(cs_pos_arr - depot_pos_arr, axis=1)  # (num_cs,)
+
+    reachable = dists * consume_rate <= battery_capacity
+    return reachable.all()
 
 def plot_instance(instances, save_path):
     save_path_plots = os.path.join(save_path, "plots")

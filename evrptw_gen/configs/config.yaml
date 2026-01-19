@@ -16,7 +16,7 @@ vehicles_profiles:
   - name: "Rivian_EDV"                      # Amazon-Rivian Electric Truck (Last-Mile)
     type: "last-mile"
     speed: 40.0                             # km/h  (Within City)
-    battery_capacity: 135                   # kWh
+    battery_capacity: 40                   # kWh (135)
     consumption_per_distance: 0.5           # kWh/km
     loading_capacity: 1.2                   # tons (Capacity)
     notes: "Custom Rivian EDV used by Amazon; ~150 miles (~241 km) range."
