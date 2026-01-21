@@ -1,5 +1,6 @@
 import time
 import argparse
+import os
 from solver import GreedySolver
 from utils.helpers import plot_solution, set_random_seed
 from utils.load_instances import load_instance
@@ -13,8 +14,8 @@ def main():
         type=str,
         required=False,
         # default='../../data/solomon_datasets/small_instances/Cplex5er/c101C5.txt',
-        default="/Users/maojie/Desktop/GitHub_Repo/EVRP-TW-Instance-Generator/eval_data_10000/solomon/target.txt",
-        help="Path to the instance file (e.g., ../../data/solomon_datasets/.../c101C5.txt)"
+        default="../../../EVRP-TW-Instance-Generator/eval_data_1000/solomon",
+        help="Path to the instance dir"
     )
     parser.add_argument(
         "--seed",
@@ -25,32 +26,42 @@ def main():
 
     args = parser.parse_args()
 
-    # Load the instance
-    instance = load_instance(args.instance_path)
-
     # Set random seed
     set_random_seed(args.seed)
 
-    # Initialize solver
-    solver = GreedySolver(instance)
-    # Print instance info
-    print(f"Instance file: {args.instance_path.split('/')[-1]}")
+    cnt = []
+    # Load the instance
+    for file in os.listdir(args.instance_path):
+        if not file.endswith('.txt'):
+            continue
+        instance_path = os.path.join(args.instance_path, file)
+        instance = load_instance(instance_path)
 
-    # Solve and measure runtime
-    start_time = time.time()
-    solution = solver.solve()
-    end_time = time.time()
+        # Initialize solver
+        solver = GreedySolver(instance)
+        # Print instance info
+        print(f"Instance file: {args.instance_path.split('/')[-1]}")
 
-    # Print solution details
-    print("\nRoutes:")
-    for route in solution:
-        print(route)
-    print(f"\nOptimal solution uses {len(solution)} vehicles")
-    print(f"Total distance: {solver.global_value:.2f}")
-    print(f"Elapsed time: {(end_time - start_time):.3f} s")
+        # Solve and measure runtime
+        start_time = time.time()
+        solution = solver.solve()
+        end_time = time.time()
 
-    # Plot solution
-    # plot_solution(instance, solution)
+        if not all(solver.visited):
+            cnt.append(file)
+        # Print solution details
+        print("\nRoutes:")
+        for route in solution:
+            print(route)
+        print(f"\nOptimal solution uses {len(solution)} vehicles")
+        print(f"Total distance: {solver.global_value:.2f}")
+        print(f"Elapsed time: {(end_time - start_time)} s")
+
+        # Plot solution
+        # plot_solution(instance, solution)
+    
+    print(f"Unsolved instances: {cnt}")
+    print(f"Total unsolved count: {len(cnt)}")
 
 
 if __name__ == "__main__":

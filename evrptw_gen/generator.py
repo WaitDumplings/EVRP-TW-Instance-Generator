@@ -145,7 +145,7 @@ class InstanceGenerator:
             inst = gen_one(env)
             instances.append(inst)
 
-        # 保存阶段不在循环里，OK
+        # 保存阶段不在循环里
         if self.save_path:
             if save_solomon:
                 save_instances(instances, self.save_path, template="solomon")
@@ -208,60 +208,6 @@ class InstanceGenerator:
                 "demands":demand, 
                 "tw":tw,
                 "service_time":service_time}
-
-    # def _generate_one_instance(self, env: Dict, format = "tensor") -> Dict:
-    #     # Select policies from env
-    #     pos_policy = CustomerPositionPolicies.from_env(env)
-    #     tw_policy  = TimeWindowPolicies.from_env(env)
-
-    #     # time unit: hours
-    #     service_time_policy = ServiceTimePolicies.from_env(env)
-    #     demand_policy = DemandPolicies.from_env(env)
-
-    #     depot_pos = self._get_depot_position(env)
-    #     cs_pos, cs_time_to_depot, depot_time_to_cs = self._get_CSs_positions(env, depot_pos)
-    #     # In case we may need for different policies.
-    #     env['instance_type'] = pos_policy.NAME
-    #     env['cs_time_to_depot'] = cs_time_to_depot
-    #     env['time_window_type'] = tw_policy.NAME
-    #     env['service_time_type'] = service_time_policy.NAME
-    #     env['demand_type'] = demand_policy.NAME
-
-    #     cus_pos, service_time, t_earliest, t_latest, demand = pos_policy.sample(
-    #         env, depot_pos, cs_pos, cs_time_to_depot, depot_time_to_cs, service_time_policy, rng=self.rng, demand_policy=demand_policy
-    #     )
-    #     if env['num_customers'] != cus_pos.shape[0]:
-    #         raise ValueError("Inconsistent shapes in customer position generation.")
-    #     if format in ["tensor", "pickle"]:
-    #         # tensor use minutes as format
-    #         tw = tw_policy.build(
-    #         env, t_earliest, t_latest, service_time, rng=self.rng, tw_format = "minutes"
-    #         )
-    #         customers_pos = cus_pos
-    #         demand = demand
-    #         service_time = service_time * 60  # convert to minutes
-
-    #         return {"env": env, 
-    #                 "depot": depot_pos, 
-    #                 "customers": customers_pos, 
-    #                 "charging_stations": cs_pos, 
-    #                 "demands":demand, 
-    #                 "tw":tw,
-    #                 "service_time":service_time}
-    #     elif format in "solomon":
-    #         # solomon use hours as format
-    #         if env['num_customers'] != service_time.shape[0]:
-    #             raise ValueError("Inconsistent shapes in service time generation.")
-    #         tw = tw_policy.build(
-    #             env, t_earliest, t_latest, service_time, rng=self.rng, tw_format = "hours"
-    #         ) 
-    #         customers = np.hstack([cus_pos, demand.reshape(-1, 1), tw, service_time.reshape(-1, 1)])
-    #         return {"env": env, 
-    #                 "depot": depot_pos, 
-    #                 "customers": customers,
-    #                 "charging_stations": cs_pos}
-    #     else:
-    #         raise ValueError(f"Unknown format: {format}")
 
     def _get_depot_position(self, env: Dict) -> np.ndarray:
         """

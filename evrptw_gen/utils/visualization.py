@@ -68,6 +68,7 @@ def save_instances(instances, save_path, template='solomon'):
             C = inst['env']['loading_capacity']
             r = inst['env']['consumption_per_distance']   # consumption rate (kWh/km)
             g = 1 / inst['env']['charging_speed']        # inverse refueling rate
+            gv = inst['env']['charging_speed']      # charging speed (kWh/min)
             v = inst['env']['speed']
 
             env = inst.get("env", {})
@@ -139,11 +140,12 @@ def save_instances(instances, save_path, template='solomon'):
 
                 # Environment parameters (two decimals where sensible)
                 f.write("\n")
-                f.write(f"Q Vehicle fuel tank capacity /{format(_as_float(Q), '.2f')}/\n")
-                f.write(f"C Vehicle load capacity /{format(_as_float(C), '.2f')}/\n")
-                f.write(f"r fuel consumption rate /{format(_as_float(r), '.2f')}/\n")
+                f.write(f"Q Vehicle fuel tank capacity /{format(_as_float(Q), '.4f')}/\n")
+                f.write(f"C Vehicle load capacity /{format(_as_float(C), '.4f')}/\n")
+                f.write(f"r fuel consumption rate /{format(_as_float(r), '.4f')}/\n")
                 f.write(f"g inverse refueling rate /{format(_as_float(g), '.4f')}/\n")
-                f.write(f"v average Velocity /{format(_as_float(v), '.2f')}/\n")
+                f.write(f"v average Velocity /{format(_as_float(v), '.4f')}/\n")
+                f.write(f"gv charging speed /{format(_as_float(gv), '.4f')}/\n")
                 # Extra metadata
                 f.write("\n" + "-" * 20 + "\n")
                 # Write out as readable lines

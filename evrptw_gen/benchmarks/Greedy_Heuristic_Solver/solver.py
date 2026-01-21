@@ -67,14 +67,14 @@ class GreedySolver:
         # ===== vehicle params =====
         self.velocity = float(instance["vehicle"]["v"])          # km/h
         self.consume_rate = float(instance["vehicle"]["r"])      # kWh/km
-        self.charging_power = 1.0 / float(instance["vehicle"]["g"])  # keep as you requested
+        self.charging_power = 1.0 / float(instance["vehicle"]["g"])  # g: inverse charging power (h/kWh); charging power: (kwh/h)
         self.fuel_cap = float(instance["vehicle"]["Q"])          # kWh
-        self.load_cap = float(instance["vehicle"]["C"])
+        self.load_cap = float(instance["vehicle"]["C"])         # tons
 
         # ===== time settings =====
         self.working_start = float(instance["meta"]["working_startTime"])
         self.working_end = float(instance["meta"]["working_endTime"])
-        self.instance_end_time = 24.0  # not used in feasibility below unless you add it
+        self.instance_end_time = float(instance["meta"]["instance_endTime"])
 
         # customer data (0-based cus_idx)
         self.service_time = [float(customers[i]["service"]) for i in range(self.num_customers)]
@@ -119,7 +119,7 @@ class GreedySolver:
 
     def _precompute_stopgraph_allpairs(self) -> Tuple[Dict[int, Dict[int, float]], Dict[int, Dict[int, Optional[int]]]]:
         """
-        All-pairs shortest time and path on stop-graph nodes = {depot} U CS.
+        All-pairs shortest time and path on stop-graph nodes = {depot} U CS. O(N^3)
 
         Edge rule (between stop nodes only):
           u->v feasible if travel_energy(u,v) <= fuel_cap
@@ -157,7 +157,7 @@ class GreedySolver:
                         dist[u][v] = w
                         nxt[u][v] = v
 
-        # Floyd–Warshall
+        # Floyd–Warshall O(N^3)
         for k in nodes:
             dk = dist[k]
             for i in nodes:
@@ -197,7 +197,7 @@ class GreedySolver:
         # direct
         e = self.travel_energy(cus_global, depot)
         t = self.travel_time(cus_global, depot)
-        if e <= cur_soc + 1e-9 and cur_time + t <= self.working_end + 1e-9:
+        if e <= cur_soc - 1e-9 and cur_time + t <= self.instance_end_time + 1e-9:
             return True
 
         # via one CS then stop-graph
@@ -206,15 +206,17 @@ class GreedySolver:
             if e1 > cur_soc + 1e-9:
                 continue
             t1 = self.travel_time(cus_global, cs)
+            if cur_time + t1 > self.instance_end_time + 1e-9:
+                continue
 
             soc_at_cs = cur_soc - e1
             charge_to_full = (self.fuel_cap - soc_at_cs) / P
-
             t_cs_dep = self.time[cs].get(depot, INF)
             if t_cs_dep >= INF / 2:
                 continue
 
-            if cur_time + t1 + charge_to_full + t_cs_dep <= self.working_end + 1e-9:
+            # cur time + travel to cs + charge to full + travel to depot <= instance_end_time
+            if cur_time + t1 + charge_to_full + t_cs_dep <= self.instance_end_time + 1e-9:
                 return True
 
         return False
@@ -353,6 +355,7 @@ class GreedySolver:
                 arrive_soc2 = self.fuel_cap - e_last
 
                 p_mid = self._stop_path(depot, cs_last)
+
                 if not p_mid:
                     continue
                 path_nodes2 = p_mid + [cus_global]
@@ -479,6 +482,7 @@ class GreedySolver:
 
             while True:
                 picked = self.find_next_customer()
+
                 if picked is None:
                     # close this vehicle route by returning to depot
                     cur_id = int(self.state["id"])
@@ -528,6 +532,6 @@ class GreedySolver:
             cur_route = str_route[start:end] + ["D0"]
             routes.append("->".join(cur_route))
         self.global_value = sum([self.distance_matrix[full_route[i]][full_route[i - 1]] for i in range(1, len(full_route))])
-
+        
         return routes
 

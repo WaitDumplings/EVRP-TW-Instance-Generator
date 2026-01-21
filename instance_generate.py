@@ -57,7 +57,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num_instances",
         type=int,
-        default=64,
+        default=20000,
         help="Number of instances to generate."
     )
     parser.add_argument(
