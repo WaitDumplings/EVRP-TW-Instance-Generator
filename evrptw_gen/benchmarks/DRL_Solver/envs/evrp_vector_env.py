@@ -78,7 +78,7 @@ class EVRPTWVectorEnv(gym.Env):
 
         assign_env_config(self, kwargs)
         self.gamma = kwargs.get("gamma", 0.99)
-        self.alpha = kwargs.get("alpha", 5.0)
+        self.alpha = kwargs.get("alpha", 1.0)
         self.beta  = kwargs.get("beta", 0.5)
         self.lambda_fail = kwargs.get("lambda_fail", 5.0)
         self.success_bonus = kwargs.get("success_bonus", 10.00)
@@ -586,7 +586,7 @@ class EVRPTWVectorEnv(gym.Env):
                 phi_sp = -((self.cus_num - next_served_cus) / self.cus_num)**self.beta
 
                 PBRS_reward = self.alpha * (self.gamma * phi_sp - phi_s)
-                PBRS_reward.clip(-0.1, 0.1, out=PBRS_reward)
+                PBRS_reward.clip(-0.3, 0.3, out=PBRS_reward)
                 # gamma*Phi(s') - Phi(s)
                 reward += PBRS_reward
 

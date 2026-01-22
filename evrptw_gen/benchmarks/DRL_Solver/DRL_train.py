@@ -109,13 +109,13 @@ def parse_args():
     parser.add_argument(
         "--num-envs",
         type=int,
-        default=512,
+        default=1024,
         help="the number of parallel game environments",
     )
     parser.add_argument(
         "--num-steps",
         type=int,
-        default=60,
+        default=20,
         help="the number of steps to run in each environment per policy rollout",
     )
     parser.add_argument(
@@ -238,8 +238,8 @@ def parse_args():
         help="test agent",
     )
     parser.add_argument("--use-graph-token", type=bool, default=True)
-    parser.add_argument("--lambda-fail-init", type=float, default=5.0)
-    parser.add_argument("--target-success", type=float, default=0.90)
+    parser.add_argument("--lambda-fail-init", type=float, default=10.0)
+    parser.add_argument("--target-success", type=float, default=0.95)
     parser.add_argument("--lambda-lr", type=float, default=1.0)
     parser.add_argument("--lambda-max", type=float, default=50.0)
     parser.add_argument("--lambda_lr_up", type=float, default=1.0,help="dual ascent step size when fail_rate > target_fail (constraint violated)")

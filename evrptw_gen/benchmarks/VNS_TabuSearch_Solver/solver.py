@@ -5,102 +5,938 @@ from collections import deque, defaultdict
 import numpy as np
 from tqdm import tqdm
 import time
-from utils.load_instances import load_instance, Route
+
+from utils.load_instances import Route  # load_instance not used here
+
 
 class VNSTSolver:
+    """
+    VNS + Tabu Search implementation with the following key fixes / optimizations:
+
+    1) Tabu Search still enumerates the full neighborhood (no sampling), BUT:
+       - It does NOT materialize a huge list of candidate solutions.
+       - It evaluates candidates online via apply -> evaluate -> rollback.
+       - This avoids O(#candidates) deepcopy + huge memory/GC pressure.
+
+    2) No "candidate-generation side effects":
+       - StationReIn local tabu list is updated ONLY when a move is accepted (not while enumerating).
+
+    3) Fix several correctness/performance bugs in the original snippet:
+       - create_new_route already includes depot; removed double-depot appends.
+       - cyclic_exchange / extra_exchange no longer mutate the input solution in-place.
+       - _tabu_search global_value / global_solution update fixed.
+       - extend() misuse fixed (extend returns None).
+       - battery_to_nearest_rs now returns dict (instead of None).
+       - instance_dist_matrix_calculatrion handles empty stations/customers safely.
+       - time_violation/time_penalty indexing corrected (avoid i-1 when i=0).
+       - load_violation signature clarified: node parameter means "node not yet in route".
+
+    NOTE:
+    - This code preserves the "full enumeration" semantics inside TS.
+    - Performance will still be dominated by neighborhood size for large instances,
+      but it will be dramatically faster than deep-copying every candidate.
+    """
+
     def __init__(self, instance, predefine_route_number=3):
         self.instance = instance
+
+        # Tabu (global) / SA
         self.tabu_list = deque(maxlen=30)
-        self.recharging_stations = np.array([[instance.stations[i].x, instance.stations[i].y] for i in range(len(instance.stations))])
+        self.temp = -1
+        self.delta_sa = 0.08
 
-        # Simulated annealing parameters
-        self.temp = -1  # initial temperature
+        # TS parameters
+        self.tabu_tenure = 30
+        self.tabu_iter = 100
 
-        # Tabu search parameters
-        self.tabu_tenure = 30  # max tabu list length
-        self.tabu_iter = 100    # number of tabu search iterations
-
-        # Penalty parameters (as in the paper)
+        # Penalty params
         self.alpha, self.beta, self.gamma = 10.0, 10.0, 10.0
         self.alpha_min, self.beta_min, self.gamma_min = 0.5, 0.75, 1.0
         self.alpha_max, self.beta_max, self.gamma_max = 5000, 5000, 5000
 
         # VNS parameters
-        self.k_max = 15      # max number of neighborhoods
-        self.η_feas = 700    # max attempts in infeasible phase
-        self.η_dist = 100    # max attempts in feasible phase
-        self.nearest_station = self.battery_to_nearest_rs(instance.depot)
-        self.instance_dist_matrix_calculatrion()
+        self.k_max = 15
+        self.η_feas = 700
+        self.η_dist = 100
+        self.predefine_route_number = predefine_route_number
+
+        # Diversification bookkeeping
         self.attribute_frequency = defaultdict(int)
         self.attribute_total = 0
         self.lambda_div = 1.0
-        self.delta_sa = 0.08
-        self.predefine_route_number = predefine_route_number
+
+        # Global best
         self.global_value = 1e10
-        self.time_matrix = self.dist_matrix / instance.vehicle_params['velocity']
+        self.global_solution = None
 
-    def time_cost(self, node1, node2):
-        i = self.node_id[node1.id]
-        j = self.node_id[node2.id]
-        return self.time_matrix[i][j]
+        # Precompute geometry for nearest station
+        self.recharging_stations = np.array(
+            [[s.x, s.y] for s in instance.stations], dtype=float
+        ) if len(instance.stations) > 0 else np.zeros((0, 2), dtype=float)
 
+        self.instance_dist_matrix_calculatrion()
+        self.nearest_station = self.battery_to_nearest_rs(instance.depot)
+
+        self.time_matrix = self.dist_matrix / float(instance.vehicle_params["velocity"])
+
+        # Local tabu for StationReIn (arc -> remaining tenure)
+        self.StationReIn_tabu_list = {}
+
+    # -------------------------
+    # Basic utilities
+    # -------------------------
     def instance_dist_matrix_calculatrion(self):
+        """Map node.id -> index for dist/time matrix lookup."""
         self.node_id = {self.instance.depot.id: 0}
-        for i in range(len(self.instance.stations)):
-            self.node_id[self.instance.stations[i].id] = i + 1
-        offset = i + 1
-        for i in range(len(self.instance.customers)):
-            self.node_id[self.instance.customers[i].id] = i + 1 + offset
+        idx = 1
+
+        for st in self.instance.stations:
+            self.node_id[st.id] = idx
+            idx += 1
+
+        for cu in self.instance.customers:
+            self.node_id[cu.id] = idx
+            idx += 1
+
         self.dist_matrix = self.instance.dist_matrix
 
-    def battery_to_nearest_rs(self, node):
-        """Precompute distance (as fuel) from each customer to its nearest charging station."""
-        self.nearest_station = {self.instance.depot.id: 0}
-        self.nearest_station_idx = {}
-
-        for i in range(len(self.instance.stations)):
-            self.nearest_station[self.instance.stations[i].id] = 0
-
-        for i in range(len(self.instance.customers)):
-            pos = np.array([self.instance.customers[i].x, self.instance.customers[i].y])
-            distances = np.linalg.norm(self.recharging_stations - pos, axis=1)
-            nearest_station = self.instance.stations[np.argmin(distances)]
-            self.nearest_station_idx[self.instance.customers[i].id] = nearest_station.id
-            self.nearest_station[self.instance.customers[i].id] = self.instance.vehicle_params['consump_rate'] * np.min(distances) / self.instance.vehicle_params['velocity']
+    def time_cost(self, node1, node2):
+        return self.time_matrix[self.node_id[node1.id]][self.node_id[node2.id]]
 
     def fuel_consumption(self, node1, node2):
-        return self.instance.vehicle_params['consump_rate'] * self.time_cost(node1, node2)
+        # consumption = consump_rate * travel_time
+        return float(self.instance.vehicle_params["consump_rate"]) * self.time_cost(node1, node2)
+
+    def battery_to_nearest_rs(self, node):
+        """Precompute fuel-to-nearest-station lower bound for each customer (used optionally elsewhere)."""
+        nearest_station = {self.instance.depot.id: 0.0}
+        self.nearest_station_idx = {}
+
+        for st in self.instance.stations:
+            nearest_station[st.id] = 0.0
+
+        # If no stations exist, set large value for customers (or 0; depends on your modeling).
+        if len(self.instance.stations) == 0:
+            for cu in self.instance.customers:
+                nearest_station[cu.id] = float("inf")
+                self.nearest_station_idx[cu.id] = None
+            return nearest_station
+
+        v = float(self.instance.vehicle_params["velocity"])
+        cr = float(self.instance.vehicle_params["consump_rate"])
+
+        for cu in self.instance.customers:
+            pos = np.array([cu.x, cu.y], dtype=float)
+            distances = np.linalg.norm(self.recharging_stations - pos, axis=1)
+            arg = int(np.argmin(distances))
+            st = self.instance.stations[arg]
+            self.nearest_station_idx[cu.id] = st.id
+            nearest_station[cu.id] = cr * float(np.min(distances)) / v
+
+        return nearest_station
+
+    def create_new_route(self):
+        """Route starts at depot by convention."""
+        return Route([self.instance.depot])
+
+    def clone_route_shallow(self, route):
+        """Clone route object, shallow-copy nodes list (Node objects reused)."""
+        new_r = Route()
+        new_r.nodes = list(route.nodes)
+        # keep auxiliary fields if present
+        if hasattr(route, "load"):
+            new_r.load = route.load
+        if hasattr(route, "time"):
+            new_r.time = route.time
+        if hasattr(route, "fuel"):
+            new_r.fuel = route.fuel
+        return new_r
+
+    def clone_solution_shallow(self, solution):
+        """Clone list of routes, shallow-copy each route's nodes list."""
+        return [self.clone_route_shallow(r) for r in solution]
+
+    # -------------------------
+    # Feasibility & penalties
+    # -------------------------
+    def load_violation(self, route, node=None):
+        """
+        If node is provided, it is assumed node is NOT already in route.
+        """
+        cap = float(self.instance.vehicle_params["load_cap"])
+        load_sum = sum(float(n.demand) for n in route.nodes)
+        if node is not None:
+            load_sum += float(node.demand)
+        return load_sum > cap
+
+    def load_penalty(self, route):
+        cap = float(self.instance.vehicle_params["load_cap"])
+        load_sum = sum(float(n.demand) for n in route.nodes)
+        return max(0.0, load_sum - cap)
+
+    def battery_violation(self, route, node=None):
+        fuel_cap = float(self.instance.vehicle_params["fuel_cap"])
+        current_fuel = fuel_cap
+
+        for i in range(len(route.nodes) - 1):
+            a = route.nodes[i]
+            b = route.nodes[i + 1]
+            current_fuel -= self.fuel_consumption(a, b)
+            if current_fuel < 0:
+                return True
+            if b.type == "f":
+                current_fuel = fuel_cap
+
+        if node is not None and len(route.nodes) > 0:
+            current_fuel -= self.fuel_consumption(route.nodes[-1], node)
+            if current_fuel < 0:
+                return True
+        return False
+
+    def battery_penalty(self, route):
+        fuel_cap = float(self.instance.vehicle_params["fuel_cap"])
+        gamma_in = 0.0
+        pen = 0.0
+
+        for i in range(len(route.nodes) - 1):
+            a = route.nodes[i]
+            b = route.nodes[i + 1]
+            gamma_in += self.fuel_consumption(a, b)
+            pen += max(0.0, gamma_in - fuel_cap)
+            if b.type == "f":
+                gamma_in = 0.0
+        return pen
+
+    def time_violation(self, route, node=None):
+        """
+        Time-window feasibility with charging time.
+        Model assumption: at a station, you recharge exactly the energy spent since last charge,
+        with charge_time = energy_used / charge_rate.
+        """
+        current_time = 0.0
+        energy_since_last_charge = 0.0
+
+        charge_rate = float(self.instance.vehicle_params["charge_rate"])
+
+        # walk along nodes
+        for i, cur in enumerate(route.nodes):
+            # arrive time (current_time already includes travel from previous)
+            arrival = max(current_time, float(cur.ready))
+            if arrival > float(cur.due):
+                return True
+
+            if cur.type == "c":
+                # service
+                current_time = arrival + float(cur.service)
+
+            elif cur.type == "f":
+                # charge
+                if energy_since_last_charge > 0.0:
+                    current_time = arrival + energy_since_last_charge / charge_rate
+                else:
+                    current_time = arrival
+                energy_since_last_charge = 0.0
+            else:
+                # depot or others
+                current_time = arrival
+
+            # travel to next
+            if i < len(route.nodes) - 1:
+                nxt = route.nodes[i + 1]
+                current_time += self.time_cost(cur, nxt)
+                # energy accrued on traveling cur->nxt
+                energy_since_last_charge += self.dist_matrix[self.node_id[cur.id], self.node_id[nxt.id]]
+
+        # optional append check
+        if node is not None and len(route.nodes) > 0:
+            last = route.nodes[-1]
+            projected = current_time + self.time_cost(last, node)
+            if projected > float(node.due):
+                return True
+        return False
+
+    def time_penalty(self, route):
+        """Lateness penalty with the same charging-time model as time_violation."""
+        current_time = 0.0
+        energy_since_last_charge = 0.0
+        pen = 0.0
+
+        charge_rate = float(self.instance.vehicle_params["charge_rate"])
+
+        for i, cur in enumerate(route.nodes):
+            arrival = max(current_time, float(cur.ready))
+            if arrival > float(cur.due):
+                pen += (arrival - float(cur.due))
+                arrival = float(cur.due)  # clamp
+
+            if cur.type == "c":
+                current_time = arrival + float(cur.service)
+            elif cur.type == "f":
+                if energy_since_last_charge > 0.0:
+                    current_time = arrival + energy_since_last_charge / charge_rate
+                else:
+                    current_time = arrival
+                energy_since_last_charge = 0.0
+            else:
+                current_time = arrival
+
+            if i < len(route.nodes) - 1:
+                nxt = route.nodes[i + 1]
+                current_time += self.time_cost(cur, nxt)
+                energy_since_last_charge += self.dist_matrix[self.node_id[cur.id], self.node_id[nxt.id]]
+
+        return pen
+
+    def is_route_feasible(self, route):
+        return not (self.load_violation(route) or self.time_violation(route) or self.battery_violation(route))
+
+    def is_solution_feasible(self, solution):
+        """Full feasibility (including 'served exactly once')."""
+        served = set()
+
+        for route in solution:
+            if not self.is_route_feasible(route):
+                return False
+            for n in route.nodes:
+                if n.type == "c":
+                    if n.id in served:
+                        return False
+                    served.add(n.id)
+
+        all_customers = {c.id for c in self.instance.customers}
+        return served == all_customers
+
+    # -------------------------
+    # Cost function
+    # -------------------------
+    def generalized_cost(self, S, penalty_value=True, p_div_value=True, allow_infeasible=True):
+        if not allow_infeasible and not self.is_solution_feasible(S):
+            return 1e10
+
+        total_distance = 0.0
+        for route in S:
+            nodes = route.nodes
+            for i in range(len(nodes) - 1):
+                total_distance += self.dist_matrix[self.node_id[nodes[i].id]][self.node_id[nodes[i + 1].id]]
+
+        total_penalty = 0.0
+        if penalty_value:
+            for route in S:
+                total_penalty += (
+                    self.alpha * self.load_penalty(route) +
+                    self.beta * self.time_penalty(route) +
+                    self.gamma * self.battery_penalty(route)
+                )
+
+        p_div_penalty = 0.0
+        if p_div_value:
+            num_customers = sum(max(0, len(r.nodes) - 2) for r in S)
+            num_vehicles = len(S)
+            penalty_sum = 0.0
+            for k, route in enumerate(S):
+                nodes = route.nodes
+                for i in range(1, len(nodes) - 1):
+                    key = (nodes[i].id, k, nodes[i - 1].id, nodes[i + 1].id)
+                    penalty_sum += self.attribute_frequency.get(key, 0)
+
+            denom = (1e-10 + float(self.attribute_total))
+            p_div_penalty = (self.lambda_div * total_distance * penalty_sum *
+                             math.sqrt(float(num_customers * num_vehicles)) / denom)
+
+        return total_distance + total_penalty + p_div_penalty
+
+    # -------------------------
+    # SA acceptance
+    # -------------------------
+    def accept_sa(self, S_new, S_old):
+        cost_new = self.generalized_cost(S_new, penalty_value=False, p_div_value=False, allow_infeasible=False)
+        cost_old = self.generalized_cost(S_old, penalty_value=False, p_div_value=False, allow_infeasible=False)
+        diff = cost_new - cost_old
+
+        if diff <= 0:
+            return True
+
+        if self.temp == -1:
+            self.temp = -diff / math.log(0.5)
+            self.cooling = (1 - self.delta_sa)
+        else:
+            self.temp *= self.cooling
+
+        return random.random() < math.exp(-diff / max(1e-12, self.temp))
+
+    # -------------------------
+    # Penalty weight update
+    # -------------------------
+    def update_reset(self):
+        self.load_update = False
+        self.batt_update = False
+        self.tw_update = False
+
+    def update_penalty_weights(self, solution, step):
+        delta = 1.2
+        penalty_update_interval = 2
+
+        load_v = sum(self.load_penalty(r) for r in solution)
+        tw_v = sum(self.time_penalty(r) for r in solution)
+        batt_v = sum(self.battery_penalty(r) for r in solution)
+
+        self.load_update = load_v > 0
+        self.tw_update = tw_v > 0
+        self.batt_update = batt_v > 0
+
+        if step % penalty_update_interval == 0:
+            if self.load_update:
+                self.alpha = min(self.alpha * delta, self.alpha_max)
+            else:
+                self.alpha = max(self.alpha / delta, self.alpha_min)
+
+            if self.tw_update:
+                self.beta = min(self.beta * delta, self.beta_max)
+            else:
+                self.beta = max(self.beta / delta, self.beta_min)
+
+            if self.batt_update:
+                self.gamma = min(self.gamma * delta, self.gamma_max)
+            else:
+                self.gamma = max(self.gamma / delta, self.gamma_min)
+
+            self.update_reset()
+
+    # -------------------------
+    # Diversification history
+    # -------------------------
+    def update_diversification_history(self, S):
+        for k, route in enumerate(S):
+            nodes = route.nodes
+            for i in range(1, len(nodes) - 1):
+                u = nodes[i].id
+                mu = nodes[i - 1].id
+                zeta = nodes[i + 1].id
+                self.attribute_frequency[(u, k, mu, zeta)] += 1
+                self.attribute_total += 1
+
+    # -------------------------
+    # Initial solution
+    # -------------------------
+    def polar_angle(self, customer, depot, random_point):
+        dx1, dy1 = random_point.x - depot.x, random_point.y - depot.y
+        dx2, dy2 = customer.x - depot.x, customer.y - depot.y
+        angle1 = math.atan2(dy1, dx1)
+        angle2 = math.atan2(dy2, dx2)
+        return (angle2 - angle1) % (2 * math.pi)
+
+    def initial_solution(self):
+        depot = self.instance.depot
+        customers = list(self.instance.customers)
+
+        if len(customers) == 0:
+            return [self.create_new_route() for _ in range(self.predefine_route_number)]
+
+        rp = random.choice(customers)
+        customers_sorted = sorted(customers, key=lambda c: self.polar_angle(c, depot, rp))
+
+        predefined_routes = self.predefine_route_number
+        routes = []
+
+        current_route = self.create_new_route()  # already has depot
+        # ensure route ends with depot when evaluating
+        if current_route.nodes[-1].type != "d":
+            current_route.nodes.append(depot)
+
+        last_route = self.create_new_route()
+        if last_route.nodes[-1].type != "d":
+            last_route.nodes.append(depot)
+
+        unassigned = []
+
+        for customer in customers_sorted:
+            best_pos = None
+            best_cost = float("inf")
+
+            # try insert into current_route before the ending depot
+            for pos in range(1, len(current_route.nodes)):  # positions including before last depot
+                # do a shallow trial (no deepcopy of nodes)
+                trial = self.clone_route_shallow(current_route)
+                trial.nodes.insert(pos, customer)
+
+                if (not self.load_violation(trial) and not self.time_violation(trial) and not self.battery_violation(trial)):
+                    cst = self.generalized_cost([trial], penalty_value=False, p_div_value=False, allow_infeasible=True)
+                    if cst < best_cost:
+                        best_cost = cst
+                        best_pos = pos
+
+            if best_pos is not None:
+                current_route.nodes.insert(best_pos, customer)
+            else:
+                if len(routes) < predefined_routes:
+                    routes.append(current_route)
+                    current_route = self.create_new_route()
+                    current_route.nodes.append(customer)
+                    current_route.nodes.append(depot)
+                else:
+                    unassigned.append(customer)
+
+        if len(current_route.nodes) > 2:
+            routes.append(current_route)
+
+        if len(unassigned) > 0:
+            unassigned.sort(key=lambda c: float(c.ready))
+            # last_route currently [depot, depot]; keep single start depot
+            last_route.nodes = [depot] + unassigned + [depot]
+            routes.append(last_route)
+
+        while len(routes) < predefined_routes:
+            r = self.create_new_route()
+            r.nodes.append(depot)
+            routes.append(r)
+
+        return routes
+
+    # -------------------------
+    # VNS perturbation
+    # -------------------------
+    def vns_perturb(self, solution, k):
+        neighborhood_structure = {
+            1: (2, 1),  2: (2, 2),  3: (2, 3),  4: (2, 4),  5: (2, 5),
+            6: (3, 1),  7: (3, 2),  8: (3, 3),  9: (3, 4), 10: (3, 5),
+            11: (4, 1), 12: (4, 2), 13: (4, 3), 14: (4, 4), 15: (4, 5)
+        }
+
+        if k not in neighborhood_structure:
+            return self.clone_solution_shallow(solution)
+
+        if len(solution) == 1:
+            if random.random() < 0.3:
+                return self.extra_exchange(solution)
+            return self.clone_solution_shallow(solution)
+
+        num_routes, max_nodes = neighborhood_structure[k]
+        if len(solution) < num_routes:
+            return self.clone_solution_shallow(solution)
+
+        return self.cyclic_exchange(solution, num_routes, max_nodes)
+
+    def cyclic_exchange(self, solution, num_routes, max_nodes):
+        """Return a perturbed COPY (no in-place mutation of input solution)."""
+        base = self.clone_solution_shallow(solution)
+        if len(base) < num_routes:
+            return base
+
+        idxs = random.sample(range(len(base)), num_routes)
+        segments, starts, ends = [], [], []
+
+        for ridx in idxs:
+            nodes = base[ridx].nodes
+            if len(nodes) < 3:
+                return base
+            start = random.randint(1, len(nodes) - 2)
+            max_len = min(max_nodes, len(nodes) - 2)
+            chain_len = random.randint(0, max_len)
+            end = min(start + chain_len, len(nodes) - 1)
+
+            segments.append(nodes[start:end])
+            starts.append(start)
+            ends.append(end)
+
+        for t in range(num_routes):
+            nxt = (t + 1) % num_routes
+            r = base[idxs[nxt]]
+            r.nodes[starts[nxt]:ends[nxt]] = segments[t]
+
+        return base
+
+    def extra_exchange(self, solution):
+        """Return a COPY with one customer extracted from the first route and put into a new route."""
+        base = self.clone_solution_shallow(solution)
+        if len(base) == 0 or len(base[0].nodes) <= 2:
+            return base
+
+        # find a customer in route 0
+        tries = 0
+        while tries < 20:
+            node_idx = random.randint(1, len(base[0].nodes) - 2)
+            if base[0].nodes[node_idx].type == "c":
+                break
+            tries += 1
+        else:
+            return base
+
+        node = base[0].nodes.pop(node_idx)
+        r = self.create_new_route()
+        r.nodes.append(node)
+        r.nodes.append(self.instance.depot)
+        base.append(r)
+        return base
+
+    # -------------------------
+    # Solution cleanup
+    # -------------------------
+    def solution_fix(self, solution):
+        """Remove immediate duplicates + remove routes with no customers."""
+        fixed = []
+        for r in solution:
+            nodes = r.nodes
+            if not nodes:
+                continue
+            new_nodes = [nodes[0]]
+            for i in range(1, len(nodes)):
+                if nodes[i].id != nodes[i - 1].id:
+                    new_nodes.append(nodes[i])
+            r.nodes = new_nodes
+
+            if any(n.type == "c" for n in r.nodes):
+                fixed.append(r)
+        return fixed
+
+    # -------------------------
+    # Tabu Search (full enumeration, apply+rollback, no candidate list)
+    # -------------------------
+    def _decay_station_tabu(self):
+        for arc in list(self.StationReIn_tabu_list.keys()):
+            self.StationReIn_tabu_list[arc] -= 1
+            if self.StationReIn_tabu_list[arc] <= 0:
+                del self.StationReIn_tabu_list[arc]
+
+    def _tabu_search(self, S):
+        current_solution = self.clone_solution_shallow(S)
+        best_solution = self.clone_solution_shallow(S)
+        tabu_list = deque(maxlen=self.tabu_tenure)
+
+        # helper to build route signature once per iteration
+        def route_sig(route):
+            return "->".join(str(n.id) for n in route.nodes)
+
+        for _iter in range(self.tabu_iter):
+            self._decay_station_tabu()
+
+            route_info = [route_sig(r) for r in current_solution]
+
+            # Track best candidate under "full" cost (allow infeasible)
+            best_move = None
+            best_move_info = None
+            best_move_cost = float("inf")
+
+            # Track best feasible (distance-only objective) candidate
+            best_feas_move = None
+            best_feas_cost = float("inf")
+
+            # -------------------------
+            # Enumerate 2-opt* (between two routes)
+            # -------------------------
+            for i in range(len(current_solution) - 1):
+                for j in range(i + 1, len(current_solution)):
+                    ri = current_solution[i]
+                    rj = current_solution[j]
+                    ni = len(ri.nodes)
+                    nj = len(rj.nodes)
+                    if ni <= 2 or nj <= 2:
+                        continue
+
+                    for split1 in range(1, ni - 1):
+                        for split2 in range(1, nj - 1):
+                            old_i_nodes = ri.nodes
+                            old_j_nodes = rj.nodes
+
+                            # apply
+                            ri.nodes = old_i_nodes[:split1] + old_j_nodes[split2:]
+                            rj.nodes = old_j_nodes[:split2] + old_i_nodes[split1:]
+
+                            # evaluate full cost
+                            c_full = self.generalized_cost(current_solution, penalty_value=True, p_div_value=True, allow_infeasible=True)
+                            info = ("Two_opt", f"{route_info[i]}@{split1}", f"{route_info[j]}@{split2}")
+
+                            if c_full < best_move_cost and info not in tabu_list:
+                                best_move_cost = c_full
+                                best_move = ("two_opt", i, j, split1, split2, old_i_nodes, old_j_nodes)
+                                best_move_info = info
+
+                            # evaluate feasible distance-only
+                            c_feas = self.generalized_cost(current_solution, penalty_value=False, p_div_value=False, allow_infeasible=False)
+                            if c_feas < best_feas_cost:
+                                best_feas_cost = c_feas
+                                best_feas_move = ("two_opt", i, j, split1, split2, old_i_nodes, old_j_nodes)
+
+                            # rollback
+                            ri.nodes = old_i_nodes
+                            rj.nodes = old_j_nodes
+
+            # -------------------------
+            # Enumerate Relocate (including open new route)
+            # -------------------------
+            for i in range(len(current_solution)):
+                ri = current_solution[i]
+                if len(ri.nodes) <= 2:
+                    continue
+
+                for split_pos in range(1, len(ri.nodes) - 1):
+                    node = ri.nodes[split_pos]
+                    if node.type != "c":
+                        continue
+
+                    # relocate into existing route j
+                    for j in range(len(current_solution)):
+                        rj = current_solution[j]
+                        for insert_pos in range(1, len(rj.nodes)):  # allow before last depot
+                            if i == j and insert_pos == split_pos:
+                                continue
+
+                            # apply (in-place pop/insert with undo)
+                            removed = ri.nodes.pop(split_pos)
+                            adj_insert = insert_pos
+                            if i == j and insert_pos > split_pos:
+                                adj_insert -= 1
+                            rj.nodes.insert(adj_insert, removed)
+
+                            info = ("Relocate", f"{route_info[i]}@{split_pos}", f"{route_info[j]}@{insert_pos}")
+                            c_full = self.generalized_cost(current_solution, True, True, True)
+                            if c_full < best_move_cost and info not in tabu_list:
+                                best_move_cost = c_full
+                                best_move = ("relocate", i, j, split_pos, insert_pos, removed)
+                                best_move_info = info
+
+                            c_feas = self.generalized_cost(current_solution, False, False, False)
+                            if c_feas < best_feas_cost:
+                                best_feas_cost = c_feas
+                                best_feas_move = ("relocate", i, j, split_pos, insert_pos, removed)
+
+                            # rollback
+                            rj.nodes.pop(adj_insert)
+                            ri.nodes.insert(split_pos, removed)
+
+                    # relocate to a new route (open one)
+                    removed = ri.nodes.pop(split_pos)
+                    new_route = self.create_new_route()
+                    new_route.nodes.append(removed)
+                    new_route.nodes.append(self.instance.depot)
+                    current_solution.append(new_route)
+
+                    info = ("RelocateNew", f"{route_info[i]}@{split_pos}")
+                    c_full = self.generalized_cost(current_solution, True, True, True)
+                    if c_full < best_move_cost and info not in tabu_list:
+                        best_move_cost = c_full
+                        best_move = ("relocate_new", i, split_pos, removed)
+                        best_move_info = info
+
+                    c_feas = self.generalized_cost(current_solution, False, False, False)
+                    if c_feas < best_feas_cost:
+                        best_feas_cost = c_feas
+                        best_feas_move = ("relocate_new", i, split_pos, removed)
+
+                    # rollback
+                    current_solution.pop()
+                    ri.nodes.insert(split_pos, removed)
+
+            # -------------------------
+            # Enumerate Exchange
+            # -------------------------
+            for i in range(len(current_solution)):
+                ri = current_solution[i]
+                for j in range(len(current_solution)):
+                    rj = current_solution[j]
+                    for p1 in range(1, len(ri.nodes) - 1):
+                        if ri.nodes[p1].type != "c":
+                            continue
+                        for p2 in range(1, len(rj.nodes) - 1):
+                            if rj.nodes[p2].type != "c":
+                                continue
+                            if i == j and p1 == p2:
+                                continue
+
+                            # apply swap
+                            ri.nodes[p1], rj.nodes[p2] = rj.nodes[p2], ri.nodes[p1]
+
+                            info = ("Exchange", f"{route_info[i]}@{p1}", f"{route_info[j]}@{p2}")
+                            c_full = self.generalized_cost(current_solution, True, True, True)
+                            if c_full < best_move_cost and info not in tabu_list:
+                                best_move_cost = c_full
+                                best_move = ("exchange", i, j, p1, p2)
+                                best_move_info = info
+
+                            c_feas = self.generalized_cost(current_solution, False, False, False)
+                            if c_feas < best_feas_cost:
+                                best_feas_cost = c_feas
+                                best_feas_move = ("exchange", i, j, p1, p2)
+
+                            # rollback
+                            ri.nodes[p1], rj.nodes[p2] = rj.nodes[p2], ri.nodes[p1]
+
+            # -------------------------
+            # Enumerate StationReIn (remove/insert), local tabu checked but updated only if accepted
+            # -------------------------
+            for i in range(len(current_solution)):
+                r = current_solution[i]
+                if len(r.nodes) <= 2:
+                    continue
+                for pos in range(1, len(r.nodes) - 1):
+                    cur = r.nodes[pos]
+
+                    # remove station
+                    if cur.type == "f":
+                        mu = r.nodes[pos - 1]
+                        zeta = r.nodes[pos + 1]
+                        arc = (mu.id, zeta.id)
+
+                        removed_station = r.nodes.pop(pos)
+
+                        info = ("StationRemove", f"{route_info[i]}@{pos}")
+                        c_full = self.generalized_cost(current_solution, True, True, True)
+                        if c_full < best_move_cost and info not in tabu_list:
+                            best_move_cost = c_full
+                            best_move = ("station_remove", i, pos, removed_station, arc)
+                            best_move_info = info
+
+                        c_feas = self.generalized_cost(current_solution, False, False, False)
+                        if c_feas < best_feas_cost:
+                            best_feas_cost = c_feas
+                            best_feas_move = ("station_remove", i, pos, removed_station, arc)
+
+                        # rollback
+                        r.nodes.insert(pos, removed_station)
+
+                    # insert station
+                    else:
+                        prev = r.nodes[pos - 1]
+                        # try all stations (full enumeration)
+                        for st in self.instance.stations:
+                            if prev.id == st.id:
+                                continue
+                            arc = (prev.id, st.id)
+                            if self.StationReIn_tabu_list.get(arc, 0) > 0:
+                                continue
+
+                            r.nodes.insert(pos, st)
+
+                            info = ("StationInsert", f"{route_info[i]}@{pos}", f"st={st.id}")
+                            c_full = self.generalized_cost(current_solution, True, True, True)
+                            if c_full < best_move_cost and info not in tabu_list:
+                                best_move_cost = c_full
+                                best_move = ("station_insert", i, pos, st, arc)
+                                best_move_info = info
+
+                            c_feas = self.generalized_cost(current_solution, False, False, False)
+                            if c_feas < best_feas_cost:
+                                best_feas_cost = c_feas
+                                best_feas_move = ("station_insert", i, pos, st, arc)
+
+                            # rollback
+                            r.nodes.pop(pos)
+
+            # If no admissible move found (can happen if tabu blocks everything), break
+            if best_move is None:
+                break
+
+            # Apply chosen move permanently (best non-tabu under full cost)
+            m = best_move
+            mtype = m[0]
+
+            if mtype == "two_opt":
+                _, i, j, split1, split2, old_i_nodes, old_j_nodes = m
+                current_solution[i].nodes = old_i_nodes[:split1] + old_j_nodes[split2:]
+                current_solution[j].nodes = old_j_nodes[:split2] + old_i_nodes[split1:]
+
+            elif mtype == "relocate":
+                _, i, j, split_pos, insert_pos, removed = m
+                ri = current_solution[i]
+                rj = current_solution[j]
+                # remove at split_pos
+                node = ri.nodes.pop(split_pos)
+                adj_insert = insert_pos
+                if i == j and insert_pos > split_pos:
+                    adj_insert -= 1
+                rj.nodes.insert(adj_insert, node)
+
+            elif mtype == "relocate_new":
+                _, i, split_pos, removed = m
+                ri = current_solution[i]
+                node = ri.nodes.pop(split_pos)
+                nr = self.create_new_route()
+                nr.nodes.append(node)
+                nr.nodes.append(self.instance.depot)
+                current_solution.append(nr)
+
+            elif mtype == "exchange":
+                _, i, j, p1, p2 = m
+                ri = current_solution[i]
+                rj = current_solution[j]
+                ri.nodes[p1], rj.nodes[p2] = rj.nodes[p2], ri.nodes[p1]
+
+            elif mtype == "station_remove":
+                _, i, pos, station_node, arc = m
+                r = current_solution[i]
+                # remove at pos (should be same station)
+                r.nodes.pop(pos)
+                # local tabu update on accept
+                self.StationReIn_tabu_list[arc] = random.randint(15, 30)
+
+            elif mtype == "station_insert":
+                _, i, pos, st, arc = m
+                r = current_solution[i]
+                r.nodes.insert(pos, st)
+                # local tabu update on accept (arc now becomes tabu)
+                self.StationReIn_tabu_list[arc] = random.randint(15, 30)
+
+            # Update tabu list & diversification stats
+            if best_move_info is not None:
+                tabu_list.append(best_move_info)
+
+            current_solution = self.solution_fix(current_solution)
+            self.update_diversification_history(current_solution)
+
+            # Track best_solution (you can choose either:
+            #   - best feasible distance-only move's outcome, or
+            #   - best feasible encountered current_solution
+            # Here: update using current_solution feasibility.
+            cur_val = self.generalized_cost(current_solution, penalty_value=False, p_div_value=False, allow_infeasible=False)
+            best_val = self.generalized_cost(best_solution, penalty_value=False, p_div_value=False, allow_infeasible=False)
+            if cur_val < best_val:
+                best_solution = self.clone_solution_shallow(current_solution)
+
+            # Update global best
+            if cur_val < self.global_value:
+                self.global_value = cur_val
+                self.global_solution = self.clone_solution_shallow(best_solution)
+
+        return best_solution
+
+    # -------------------------
+    # Public solve()
+    # -------------------------
+    def apply_tabu_search(self, S_prime):
+        return self._tabu_search(S_prime)
 
     def solve(self):
-        """VNS/TS framework based on Figure 1 in the paper."""
         S = self.initial_solution()
-        self.global_solution = S[:]
-        κ = 1   # current neighborhood index
-        i = 0   # iteration counter
-        feasibilityPhase = True  # start in feasible phase
-        best_solution = copy.deepcopy(S)
-        best_value = 1e10
-        
-        # Initialize tqdm (rough upper bound on steps)
-        pbar = tqdm(total=self.η_dist + self.η_feas)
-        while feasibilityPhase or (not feasibilityPhase and i < self.η_dist):
-            start_time = time.time()
-            S_prime = self.vns_perturb(S, κ)
-            S_double_prime = self.apply_tabu_search(S_prime)
+        self.global_solution = self.clone_solution_shallow(S)
+        self.global_value = self.generalized_cost(S, penalty_value=False, p_div_value=False, allow_infeasible=False)
 
-            if self.accept_sa(S_double_prime, S):
-                S = S_double_prime[:]
+        κ = 1
+        i = 0
+        feasibilityPhase = True
+
+        best_solution = self.clone_solution_shallow(S)
+        best_value = self.global_value
+
+        pbar = tqdm(total=self.η_dist + self.η_feas)
+
+        while feasibilityPhase or (not feasibilityPhase and i < self.η_dist):
+            S_prime = self.vns_perturb(S, κ)
+            S_double = self.apply_tabu_search(S_prime)
+
+            if self.accept_sa(S_double, S):
+                S = self.clone_solution_shallow(S_double)
                 κ = 1
             else:
                 κ = (κ % self.k_max) + 1
 
-            S_value = self.generalized_cost(S, penalty_value=False, p_div_value=False, allow_infeasible=False)
-            if self.is_solution_feasible(S) and S_value < best_value:
-                best_solution = copy.deepcopy(S)
-                best_value = S_value
-                if self.global_value > best_value:
-                    self.global_value = best_value
-                    self.global_solution = best_solution
+            # update best / global
+            if self.is_solution_feasible(S):
+                val = self.generalized_cost(S, penalty_value=False, p_div_value=False, allow_infeasible=False)
+                if val < best_value:
+                    best_value = val
+                    best_solution = self.clone_solution_shallow(S)
+                if val < self.global_value:
+                    self.global_value = val
+                    self.global_solution = self.clone_solution_shallow(S)
 
             if feasibilityPhase:
                 if not self.is_solution_feasible(S):
@@ -109,798 +945,94 @@ class VNSTSolver:
                         i -= 1
                 else:
                     feasibilityPhase = False
-                    i = 0  # switch to non-feasible phase
+                    i = 0
                     pbar.reset(total=self.η_dist)
+
             self.update_penalty_weights(S, i)
             i += 1
             pbar.update(1)
 
         pbar.close()
-        return self.global_solution 
+        return self.global_solution
 
-    def apply_tabu_search(self, S_prime):
-        """Apply tabu search to S'."""
-        return self._tabu_search(S_prime)
-
-    def accept_sa(self, S_double_prime, S):
-        """SA acceptance criterion."""
-        cost_diff = self.generalized_cost(S_double_prime, penalty_value=False, p_div_value=False, allow_infeasible=False) - self.generalized_cost(S, penalty_value=False, p_div_value=False, allow_infeasible=False)
-
-        if cost_diff <= 0:
-            return True  # accept better solution
-
-        if self.temp == -1 and cost_diff > 0:
-            # Paper's heuristic: initialize temperature at first worsening move
-            self.temp = -cost_diff / math.log(0.5)
-            self.cooling = (1 - self.delta_sa)
-        else:
-            # linear cooling
-            self.temp *= self.cooling  
-
-        # SA acceptance
-        return random.random() < math.exp(-cost_diff / self.temp)
-
-    def add_vehicle(self, S):
-        """Add an additional vehicle by splitting infeasible routes."""
-        new_route = []
-        candidate_customer = []
-        for route in S:
-            if self.is_route_feasible(route):
-                new_route.append(route)
-                continue
-
-            route_add = self.copy_route(route)
-            route_length = len(route_add.nodes)
-            search_idx = 1
-
-            while search_idx < route_length - 1 and not self.is_route_feasible(route_add):
-                current_node = route_add.nodes[search_idx]
-                if self.violates_constraints(route_add, search_idx):
-                    if current_node.type == 'c':
-                        candidate_customer.append(current_node)
-                        route_add.nodes.pop(search_idx)
-                        route_length -= 1
-                    else:
-                        route_add.nodes.pop(search_idx)
-                else:                    
-                    search_idx += 1
-
-            if len(route_add.nodes) > 2:
-                new_route.append(route_add)
-            
-        route_add = self.create_new_route()
-        route_add.nodes.append(self.instance.depot)
-        candidate_routes = []
-        # breakpoint()
-        while len(candidate_customer) > 0:
-            current_node = candidate_customer.pop()
-            
-            if not candidate_routes:
-                route_add.nodes.insert(-1, current_node)
-                candidate_routes.append(route_add)
-            else:
-                insert_success = False
-                for route in candidate_routes:
-                    for insert_pos in reversed(range(1, len(route.nodes) - 1)):
-                        route.nodes.insert(insert_pos, current_node)
-                        if self.is_route_feasible(route):
-                            insert_success = True
-                            break
-                        else:
-                            route.nodes.pop(insert_pos)  # revert insertion
-                    if insert_success:
-                        break
-                
-                if not insert_success:
-                    route_add = self.create_new_route()
-                    route_add.nodes.append(current_node)
-                    route_add.nodes.append(self.instance.depot)
-                    candidate_routes.append(route_add)
-        
-        new_route.extend(candidate_routes)
+    # -------------------------
+    # add_vehicle / violates_constraints (kept close to your original)
+    # -------------------------
+    def copy_route_deep_nodes(self, route):
+        """If you still want a deep node copy in add_vehicle, keep it here."""
+        new_route = Route()
+        new_route.nodes = copy.deepcopy(route.nodes)
+        if hasattr(route, "load"):
+            new_route.load = route.load
+        if hasattr(route, "time"):
+            new_route.time = route.time
+        if hasattr(route, "fuel"):
+            new_route.fuel = route.fuel
         return new_route
 
     def violates_constraints(self, route, search_idx):
-        """Check whether the route still violates constraints after removing node at search_idx."""
-        new_route = self.copy_route(route)
-        new_route.nodes = new_route.nodes[:search_idx + 1]
-        if new_route.nodes[-1].type != 'd':
+        new_route = self.clone_route_shallow(route)
+        new_route.nodes = new_route.nodes[: search_idx + 1]
+        if new_route.nodes[-1].type != "d":
             new_route.nodes.append(self.instance.depot)
         return self.battery_violation(new_route) or self.time_violation(new_route) or self.load_violation(new_route)
 
-    def battery_violation(self, route, node=None):
-        """Check whether battery constraints are violated (optionally with an additional node)."""
-        current_fuel = self.instance.vehicle_params['fuel_cap']
+    def add_vehicle(self, S):
+        new_routes = []
+        candidate_customers = []
 
-        for i in range(len(route.nodes) - 1):
-            from_node = route.nodes[i]
-            to_node = route.nodes[i + 1]
-            fuel_needed = self.fuel_consumption(from_node, to_node)
+        for route in S:
+            if self.is_route_feasible(route):
+                new_routes.append(route)
+                continue
 
-            current_fuel -= fuel_needed
-            if current_fuel < 0:
-                return True  # insufficient battery
+            route_add = self.clone_route_shallow(route)
+            route_len = len(route_add.nodes)
+            idx = 1
 
-            # recharge at station
-            if to_node.type == 'f':
-                current_fuel = self.instance.vehicle_params['fuel_cap']
-
-        # check for an extra node
-        if node is not None:
-            fuel_needed = self.fuel_consumption(route.nodes[-1], node)
-            current_fuel -= fuel_needed
-            if current_fuel < 0:
-                return True
-
-        return False
-
-    def battery_penalty(self, route):
-        """Compute cumulative battery overflow along the route (used as penalty)."""
-        current_fuel = self.instance.vehicle_params['fuel_cap']
-        battery_penalty_value = 0
-        gamma_in = 0
-        for i in range(len(route.nodes) - 1):
-            from_node = route.nodes[i]
-            to_node = route.nodes[i + 1]
-            fuel_needed = self.fuel_consumption(from_node, to_node)
-
-            gamma_in += fuel_needed
-            battery_penalty_value += max(0, gamma_in - self.instance.vehicle_params['fuel_cap'])
-                
-            # recharge at station
-            if to_node.type == 'f':
-                gamma_in = 0
-        return battery_penalty_value
-
-    def load_violation(self, route, node=None):
-        """Check vehicle capacity constraint (optionally with an additional node)."""
-        if node is not None:
-            return sum(node.demand for node in route.nodes) + node.demand > self.instance.vehicle_params['load_cap']
-        return sum(node.demand for node in route.nodes) > self.instance.vehicle_params['load_cap']
-    
-    def load_penalty(self, route):
-        """Capacity overflow used as penalty."""
-        return max(0, sum(node.demand for node in route.nodes) - self.instance.vehicle_params['load_cap'])
-
-    def time_violation(self, route, node=None):
-        """Check time-window feasibility (optionally with an additional node)."""
-        current_time = 0
-        battery_use = 0
-        vehicle_params = self.instance.vehicle_params
-        charge_rate = vehicle_params['charge_rate']
-        
-        for i in range(len(route.nodes)):
-            node_i = route.nodes[i]
-            
-            # arrival time cannot be earlier than ready time
-            arrival_time = max(current_time, node_i.ready)
-            
-            # time-window violation
-            if arrival_time > node_i.due:
-                return True
-            
-            # battery update or charging
-            if node_i.type == "c":  # customer
-                if i < len(route.nodes) - 1:
-                    battery_use += self.dist_matrix[self.node_id[node_i.id], self.node_id[route.nodes[i-1].id]]
-                current_time = arrival_time + node_i.service
-
-            elif node_i.type == "f":  # charging station
-                battery_use += self.dist_matrix[self.node_id[node_i.id], self.node_id[route.nodes[i-1].id]]
-                current_time += battery_use / charge_rate
-                battery_use = 0  # reset after charge
-
-            # travel time to next node
-            if i < len(route.nodes) - 1:
-                current_time += self.time_cost(node_i, route.nodes[i + 1])
-
-        # optionally check adding a new node
-        if node is not None:
-            last_node = route.nodes[-1] if route.nodes else None
-            if last_node:
-                projected_arrival = current_time + self.time_cost(last_node, node)
-                if projected_arrival > node.due:
-                    return True
-
-        return False
-
-    def time_penalty(self, route):
-        """Compute time-window violation penalty including charging time at stations."""
-        time_penalty_value = 0
-        current_time = 0
-        battery_use = 0
-        vehicle_params = self.instance.vehicle_params
-        charge_rate = vehicle_params['charge_rate']
-
-        for i in range(len(route.nodes)):
-            node_i = route.nodes[i]
-
-            # cannot arrive earlier than ready time
-            arrival_time = max(current_time, node_i.ready)
-
-            # accumulate lateness penalty
-            if arrival_time > node_i.due:
-                time_penalty_value += max(0, arrival_time - node_i.due)
-                arrival_time = node_i.due  # assume arriving at due time
-
-            # handle customer
-            if node_i.type == "c":  
-                current_time = arrival_time + node_i.service
-                if i < len(route.nodes) - 1:
-                    next_node = route.nodes[i + 1]
-                    battery_use += self.dist_matrix[self.node_id[node_i.id], self.node_id[next_node.id]]
-
-            # handle station
-            elif node_i.type == "f":
-                if battery_use > 0:
-                    charge_time = battery_use / charge_rate
-                    current_time += charge_time
-                    battery_use = 0
-
-            # travel time to next
-            if i < len(route.nodes) - 1:
-                current_time += self.time_cost(node_i, route.nodes[i + 1])
-
-        return time_penalty_value
-
-    def update_penalty_weights(self, solution, step):
-        """Update α, β, γ adaptively following the paper's rule."""
-        delta = 1.2  # growth factor used in experiments
-        penalty_update_interval = 2  # τ_penalty = 2
-
-        # compute current violations
-        load_violation = sum(self.load_penalty(route) for route in solution)
-        tw_violation = sum(self.time_penalty(route) for route in solution)
-        batt_violation = sum(self.battery_penalty(route) for route in solution)
-
-        # flags for whether there is a violation
-        self.load_update = load_violation > 0
-        self.tw_update = tw_violation > 0
-        self.batt_update = batt_violation > 0
-
-        # update only at scheduled steps
-        if step % penalty_update_interval == 0:
-            # α: capacity violation penalty
-            if self.load_update:
-                self.alpha = min(self.alpha * delta, self.alpha_max)
-            else:
-                self.alpha = max(self.alpha / delta, self.alpha_min)
-            
-            # β: time-window violation penalty
-            if self.tw_update:
-                self.beta = min(self.beta * delta, self.beta_max)
-            else:
-                self.beta = max(self.beta / delta, self.beta_min)
-
-            # γ: battery violation penalty
-            if self.batt_update:
-                self.gamma = min(self.gamma * delta, self.gamma_max)
-            else:
-                self.gamma = max(self.gamma / delta, self.gamma_min)
-
-            self.update_reset()
-
-    def update_reset(self):
-        """Reset violation flags."""
-        self.load_update = False
-        self.batt_update = False
-        self.tw_update = False
-
-    def initial_solution(self):
-        """Initial solution based on Schneider et al. (2014): polar-angle sort + greedy insertion + batch TW ordering."""
-        depot = self.instance.depot
-        customers = self.instance.customers
-
-        # choose a random point for polar-angle sorting
-        random_point = random.choice(customers)
-        customers_sorted = sorted(customers, key=lambda c: self.polar_angle(c, depot, random_point))
-
-        # number of predefined routes (from best-known solutions)
-        predefined_routes = self.predefine_route_number
-
-        routes = []
-        current_route = self.create_new_route()
-        current_route.nodes.append(depot)
-
-        last_route = self.create_new_route()
-        unassigned_customers = []  # customers that cannot fit within predefined_routes
-
-        for customer in customers_sorted:
-            best_position = None
-            min_extra_cost = float('inf')
-
-            # find best insertion position in current route (min marginal cost)
-            for i in range(1, len(current_route.nodes)):  # do not insert at the start
-                temp_route = self.copy_route(current_route)
-                temp_route.nodes.insert(i, customer)
-
-                if not self.load_violation(temp_route, customer) and not self.time_violation(temp_route, customer):
-                    extra_cost = self.generalized_cost([temp_route], penalty_value=False, p_div_value=False, allow_infeasible=True)
-                    if extra_cost < min_extra_cost:
-                        min_extra_cost = extra_cost
-                        best_position = i
-
-            # insert or open a new route
-            if best_position is not None:
-                current_route.nodes.insert(best_position, customer)
-            else:
-                if len(routes) < predefined_routes:
-                    # close current route and open a new one
-                    routes.append(current_route)
-
-                    current_route = self.create_new_route()
-                    current_route.nodes.append(customer)
-                    current_route.nodes.append(depot)  # start of the new route
+            while idx < route_len - 1 and not self.is_route_feasible(route_add):
+                cur = route_add.nodes[idx]
+                if self.violates_constraints(route_add, idx):
+                    if cur.type == "c":
+                        candidate_customers.append(cur)
+                    route_add.nodes.pop(idx)
+                    route_len -= 1
                 else:
-                    # exceed route-limit; postpone to last_route
-                    unassigned_customers.append(customer)
-
-        if len(current_route.nodes) > 2:
-            routes.append(current_route) 
-
-        # batch-insert to last_route ordered by ready time
-        if len(unassigned_customers) > 0:
-            unassigned_customers.sort(key=lambda c: c.ready)
-            last_route.nodes.extend(unassigned_customers)
-            last_route.nodes.append(depot)
-            routes.append(last_route)
-
-        while len(routes) < predefined_routes:
-            current_route = self.create_new_route()
-            current_route.nodes.append(depot)
-            routes.append(current_route)
-
-        return routes
-
-    def vns_perturb(self, solution, k):
-        """Neighborhood perturbation for VNS (following Table 2 in the paper)."""
-        neighborhood_structure = {
-            1: (2, 1),  2: (2, 2),  3: (2, 3),  4: (2, 4),  5: (2, 5),
-            6: (3, 1),  7: (3, 2),  8: (3, 3),  9: (3, 4), 10: (3, 5),
-            11: (4, 1), 12: (4, 2), 13: (4, 3), 14: (4, 4), 15: (4, 5)
-        }
-
-        if k not in neighborhood_structure:
-            return solution
-        if len(solution) == 1:
-            if random.random() < 0.3:
-                return self.extra_exchange(solution)
-            return solution
-
-        if len(solution) < neighborhood_structure[k][0]:
-            return solution
-
-        num_routes, max_nodes = neighborhood_structure[k]
-        return self.cyclic_exchange(solution, num_routes, max_nodes)
-
-    def cyclic_exchange(self, solution, num_routes, max_nodes):
-        """Cyclic-Exchange across num_routes routes (paper's κ-neighborhood)."""
-        if len(solution) < num_routes:
-            return solution
-
-        # Optimization 1: copy structure only where modified
-        selected_routes_idx = random.sample(range(len(solution)), num_routes)
-        new_solution = [solution[i] for i in range(len(solution))]
-
-        selected_routes = [solution[i] for i in selected_routes_idx]
-        segments, start_positions, end_positions = [], [], []
-
-        # Optimization 2: avoid repeated attribute access
-        for route in selected_routes:
-            nodes = route.nodes
-            num_nodes = len(nodes)
-            if num_nodes < 3:  # need at least depot + one customer + depot
-                return solution  
-
-            start = random.randint(1, num_nodes - 2)
-            max_chain_length = min(max_nodes, num_nodes - 2)  
-            chain_length = random.randint(0, max_chain_length)
-            end = min(start + chain_length, num_nodes - 1)
-
-            segments.append(nodes[start:end])
-            start_positions.append(start)
-            end_positions.append(end)
-
-        # Optimization 3: in-place splice
-        for i in range(num_routes):
-            next_i = (i + 1) % num_routes
-            route = new_solution[selected_routes_idx[next_i]]
-            route.nodes[start_positions[next_i]:end_positions[next_i]] = segments[i]
-
-        return new_solution
-
-    def extra_exchange(self, solution):
-        """Extract a customer from the first route and open a new route for diversification."""
-        node_idx = random.randint(1, len(solution[0].nodes) - 1)
-        while solution[0].nodes[node_idx].type != "c":
-            node_idx = random.randint(1, len(solution[0].nodes) - 1)
-        node = solution[0].nodes.pop(node_idx)
-        route_add = self.create_new_route()
-        route_add.nodes.append(node)
-        route_add.nodes.append(self.instance.depot)
-        solution.append(route_add)
-        return solution
-
-    def _tabu_search(self, S):
-        """Tabu search."""
-        best_solution = copy.deepcopy(S)
-        current_solution = copy.deepcopy(S)
-        tabu_list = deque(maxlen=self.tabu_tenure)
-        for iter in range(self.tabu_iter):
-            # generate candidate neighborhood
-            self.route_info = [self.print_route(r) for r in current_solution]
-            two_opt_start, two_opt_route_info = self._two_opt(current_solution)
-            relocate_start, relocate_route_info = self._relocate(current_solution)
-            exchange_start, exchange_route_info = self._exchange(current_solution)
-            station_in_re_start, station_in_re_route_info = self._station_insertion(current_solution)
-
-            zip_neighborhood = [two_opt_start, relocate_start, exchange_start, station_in_re_start]
-            neighborhood = [item for sublist in zip_neighborhood for item in sublist]
-            zip_infos = [two_opt_route_info, relocate_route_info, exchange_route_info, station_in_re_route_info]
-            tabu_infos = [item for sublist in zip_infos for item in sublist]
-
-            # pick the best candidate
-            current_candidate = min(neighborhood, key=self.generalized_cost)
-            current_candidate_info = tabu_infos[neighborhood.index(current_candidate)]
-            current_candidate = self.solution_fix(current_candidate)
-            best_solution = min(
-                neighborhood, 
-                key=lambda sol: self.generalized_cost(
-                    sol, penalty_value=False, p_div_value=False, allow_infeasible=False
-                )
-            )
-            best_solution_value = self.generalized_cost(best_solution, penalty_value=False, p_div_value=False, allow_infeasible=False)
-            best_solution = self.solution_fix(best_solution)
-
-            if best_solution_value < self.global_value:
-                global_value = best_solution_value  # NOTE: this sets a local variable in original code
-                self.golbal_solution = best_solution  # NOTE: original typo preserved
-
-            if current_candidate_info not in tabu_list:
-                depot_to_depot = [r for r in current_candidate if len(r.nodes) == 2]
-                if len(depot_to_depot) > 1:
-                    regular_routes = [r for r in current_candidate if len(r.nodes) > 2]
-                    current_candidate = regular_routes.extend(depot_to_depot[0])
-                
-                current_solution = current_candidate
-                tabu_list.append(current_candidate_info)
-
-                # update historical route-structure frequency
-                self.update_diversification_history(current_solution)
-
-                # update best solution
-                if self.generalized_cost(current_solution, penalty_value=False, p_div_value=False, allow_infeasible=False) < self.generalized_cost(best_solution, penalty_value=False, p_div_value=False, allow_infeasible=False):
-                    best_solution = copy.deepcopy(current_solution)
-        test_end = time.time()
-        return best_solution
-
-    def update_diversification_history(self, S):
-        """Update historical frequency of route structures."""
-        for k, route in enumerate(S):
-            for i in range(1, len(route.nodes) - 1):  # iterate over customers
-                u = route.nodes[i].id
-                mu = route.nodes[i - 1].id
-                zeta = route.nodes[i + 1].id
-                self.attribute_frequency[(u, k, mu, zeta)] += 1
-                self.attribute_total += 1
-
-    def generalized_cost(self, S, penalty_value=True, p_div_value=True, allow_infeasible=True, tabu_search=False):
-        """Unified objective function: distance + penalties (and optional diversification penalty)."""
-
-        if not allow_infeasible and not self.is_solution_feasible(S):
-            infeasible_cost = 1e10
-            return (infeasible_cost, infeasible_cost) if tabu_search else infeasible_cost
-
-        total_distance = sum(
-            self.dist_matrix[self.node_id[route.nodes[i].id]][self.node_id[route.nodes[i + 1].id]]
-            for route in S for i in range(len(route.nodes) - 1)
-        )
-
-        total_penalty = sum(
-            self.alpha * self.load_violation(route) +
-            self.beta * self.time_penalty(route) +
-            self.gamma * self.battery_penalty(route)
-            for route in S
-        ) if penalty_value else 0
-
-        p_div_penalty = 0
-        if p_div_value:
-            num_customers = sum(len(route.nodes) - 2 for route in S)
-            num_vehicles = len(S)
-
-            penalty_sum = sum(
-                self.attribute_frequency.get((route.nodes[i].id, k, route.nodes[i - 1].id, route.nodes[i + 1].id), 0)
-                for k, route in enumerate(S)
-                for i in range(1, len(route.nodes) - 1)
-            )
-
-            p_div_penalty = (self.lambda_div * total_distance * penalty_sum *
-                            ((num_customers * num_vehicles) ** 0.5) / (1e-10 + self.attribute_total))
-
-        total_cost = total_distance + total_penalty + p_div_penalty
-
-        if tabu_search:
-            # for tabu search return both cost and distance
-            return total_cost, total_distance
-        else:
-            return total_cost
-
-    def print_route(self, route):
-        """Return a string identifier for a route."""
-        route_info = []
-        for node in route.nodes:
-            route_info.append(node.id)
-        return '->'.join(route_info)
-
-    def _two_opt(self, solution):
-        """2-opt* move between two routes."""
-        two_opt_solution = []
-        two_opt_tabu_list = []
-        
-        for i in range(len(solution) - 1):
-            for j in range(i + 1, len(solution)):
-                for split_1 in range(1, len(solution[i].nodes)-1):
-                    for split_2 in range(1, len(solution[j].nodes)-1):
-                        # shallow copy solution
-                        new_solution = solution[:]
-
-                        # deep copy only modified routes
-                        new_solution[i] = copy.deepcopy(solution[i])
-                        new_solution[j] = copy.deepcopy(solution[j])
-
-                        # swap tails
-                        segment1_head, segment1_tail = new_solution[i].nodes[:split_1], new_solution[i].nodes[split_1:]
-                        segment2_head, segment2_tail = new_solution[j].nodes[:split_2], new_solution[j].nodes[split_2:]
-
-                        new_solution[i].nodes = segment1_head + segment2_tail
-                        new_solution[j].nodes = segment2_head + segment1_tail
-
-                        # record tabu info
-                        route_info = (['Two_opt', self.route_info[i] + str(split_1), self.route_info[j] + str(split_2)])
-
-                        two_opt_solution.append(new_solution)
-                        two_opt_tabu_list.append(route_info)
-        
-        return two_opt_solution, two_opt_tabu_list
-
-    def _relocate(self, solution):
-        """Relocate a customer from one route to another."""
-        relocate_solution = []
-        relocate_tabu_list = []
-
-        for i in range(len(solution)):
-            for j in range(len(solution)):
-                for split_pos in range(1, len(solution[i].nodes)-1):
-                    for insert_pos in range(1, len(solution[j].nodes)):
-                        # shallow copy
-                        new_solution = solution[:]
-                        # deep copy only modified routes
-                        new_solution[i] = copy.deepcopy(solution[i])
-                        new_solution[j] = copy.deepcopy(solution[j])
-
-                        route_info = (['Relocate', self.route_info[i] + str(split_pos), self.route_info[j] + str(insert_pos)])
-
-                        # execute relocate
-                        if i == j and insert_pos > split_pos:
-                            insert_pos -= 1  # adjust target index
-
-                        node = new_solution[i].nodes.pop(split_pos)
-                        new_solution[j].nodes.insert(insert_pos, node)
-
-                        relocate_solution.append(new_solution)
-                        relocate_tabu_list.append(route_info)
-                        my_debug = False
-                        if my_debug:
-                            self.generalized_cost(new_solution, False, False, False)
-
-                    # relocate to a new route (open one)
-                    new_solution = copy.deepcopy(solution)
-                    new_solution[i] = copy.deepcopy(solution[i])
-                    node = new_solution[i].nodes.pop(split_pos)
-
-                    new_route = self.create_new_route()
-                    new_route.nodes.append(node)
-                    new_route.nodes.append(self.instance.depot)
-
-                    new_solution.append(new_route)
-                    route_info = (['Relocate', self.route_info[i] + str(split_pos)])
-                    relocate_solution.append(new_solution)
-                    relocate_tabu_list.append(route_info)
-
-        return relocate_solution, relocate_tabu_list
-
-    def _exchange(self, solution):
-        """Exchange two customers across two routes."""
-        exchange_solution = []
-        exchange_tabu_list = []
-
-        for i in range(len(solution)):
-            for j in range(len(solution)):
-                for split_pos1 in range(1, len(solution[i].nodes)-1):
-                    if solution[i].nodes[split_pos1].type != 'c':
-                        continue
-                    for split_pos2 in range(1, len(solution[j].nodes)-1):
-                        if solution[j].nodes[split_pos2].type != 'c' or (i == j and split_pos1 == split_pos2):
-                            continue
-
-                        # shallow copy
-                        new_solution = solution[:]
-                        # deep copy only modified routes
-                        new_solution[i] = copy.deepcopy(solution[i])
-                        new_solution[j] = copy.deepcopy(solution[j])
-
-                        # swap
-                        new_solution[i].nodes[split_pos1], new_solution[j].nodes[split_pos2] = (
-                            new_solution[j].nodes[split_pos2],
-                            new_solution[i].nodes[split_pos1],
-                        )
-
-                        route_info = (['Exchange', self.route_info[i] + str(split_pos1), self.route_info[j] + str(split_pos2)])
-
-                        exchange_solution.append(new_solution)
-                        exchange_tabu_list.append(route_info)
-
-        return exchange_solution, exchange_tabu_list
-
-    def _station_insertion(self, solution):
-        """StationReIn: insert/remove charging stations with a local tabu mechanism."""
-
-        # initialize local tabu list if needed
-        if not hasattr(self, 'StationReIn_tabu_list'):
-            self.StationReIn_tabu_list = {}
-
-        station_in_re_solution = []
-        station_in_re_tabu_list = []
-
-        for i in range(len(solution)):
-            for insert_pos in range(1, len(solution[i].nodes)):
-                node = solution[i].nodes[insert_pos]
-
-                # remove a station
-                if node.type == 'f':
-                    μ, ζ = solution[i].nodes[insert_pos-1], solution[i].nodes[insert_pos+1]
-                    arc = (μ.id, ζ.id)  # record deleted arc
-
-                    # shallow copy
-                    new_solution = solution[:]
-                    # deep copy only this route
-                    new_solution[i] = copy.deepcopy(solution[i])
-
-                    # remove the station
-                    new_solution[i].nodes = new_solution[i].nodes[:insert_pos] + new_solution[i].nodes[insert_pos+1:]
-
-                    route_info = ['StationInReRemove', self.route_info[i] + "|" + str(insert_pos)]
-
-                    # update local tabu list
-                    tabu_tenure = random.randint(15, 30)
-                    self.StationReIn_tabu_list[arc] = tabu_tenure
-
-                    station_in_re_solution.append(new_solution)
-                    station_in_re_tabu_list.append(route_info)
-
-                # insert a station
-                else:
-                    for station in self.instance.stations:
-                        if solution[i].nodes[insert_pos-1].id == station.id:
-                            continue  # avoid immediate repetition
-                        
-                        μ, ζ = solution[i].nodes[insert_pos-1], station
-                        arc = (μ.id, ζ.id)
-
-                        # check tabu
-                        if arc in self.StationReIn_tabu_list and self.StationReIn_tabu_list[arc] > 0:
-                            continue
-
-                        # shallow copy
-                        new_solution = solution[:]
-                        # deep copy only this route
-                        new_solution[i] = copy.deepcopy(solution[i])
-
-                        # insert the station
-                        new_solution[i].nodes.insert(insert_pos, station)
-
-                        route_info = ['StationInReInsert', self.route_info[i] + "|" + str(insert_pos)]
-
-                        station_in_re_solution.append(new_solution)
-                        station_in_re_tabu_list.append(route_info)
-
-        # decrease tabu tenure and clean expired entries
-        for arc in list(self.StationReIn_tabu_list.keys()):
-            if self.StationReIn_tabu_list[arc] > 0:
-                self.StationReIn_tabu_list[arc] -= 1
-            if self.StationReIn_tabu_list[arc] == 0:
-                del self.StationReIn_tabu_list[arc]
-
-        return station_in_re_solution, station_in_re_tabu_list
-
-    def adjacent_check(self, solutions, name=None, checkpoint_mode=True):
-        """Sanity check for adjacent duplicate nodes."""
-        for solution in solutions:
-            for route in solution:
-                for i in range(1, len(route.nodes) - 1):
-                    if route.nodes[i] == route.nodes[i-1]:
-                        print("{} Adjacent Check Failed".format(name))
-                        if checkpoint_mode:
-                            breakpoint()
-                        else:
-                            return False
-        return True
-
-    def is_solution_feasible(self, solution):
-        """Check the feasibility of the whole solution."""
-        served_customers = set()
-        for route in solution:
-            if not self.is_route_feasible(route):
-                return False
-
-            # ensure each customer is served exactly once
-            for node in route.nodes:
-                if node.type == 'c':
-                    if node.id in served_customers:
-                        return False
-                    served_customers.add(node.id)
-        
-        # ensure all customers are served
-        all_customers = {customer.id for customer in self.instance.customers}
-        if served_customers != all_customers:
-            return False
-
-        return True
-
-    def is_route_feasible(self, route, new_node=None):
-        """Check feasibility of a single route."""
-        return not (self.load_violation(route) or self.time_violation(route) or self.battery_violation(route))
-
-    def create_new_route(self):
-        """Create a new empty route starting at depot."""
-        return Route([self.instance.depot])
-
-    def solution_fix(self, solution):
-        """Light cleanup of a solution: remove immediate duplicates and empty routes."""
-        S = []
-        for route in solution:
-            # 1) remove immediate duplicates
-            route.nodes = [route.nodes[i] for i in range(len(route.nodes)) if i == 0 or route.nodes[i].id != route.nodes[i - 1].id]
-
-            # 2) keep routes that contain at least one customer
-            if any(node.type == "c" for node in route.nodes):
-                S.append(route)
-
-        return S
-
-    def polar_angle(self, customer, depot, random_point):
-        """Compute the polar angle of a customer relative to the depot and a random reference point."""
-        # Vector 1: depot -> random point
-        dx1, dy1 = random_point.x - depot.x, random_point.y - depot.y
-        # Vector 2: depot -> customer
-        dx2, dy2 = customer.x - depot.x, customer.y - depot.y
-
-        angle1 = math.atan2(dy1, dx1)
-        angle2 = math.atan2(dy2, dx2)
-
-        relative_angle = (angle2 - angle1) % (2 * math.pi) 
-        return relative_angle
-
-    def copy_solution(self, solution):
-        """Deep copy a solution (list of routes)."""
-        return [self.copy_route(r) for r in solution]
-
-    def copy_route(self, route):
-        """Deep copy a single route."""
-        new_route = Route()
-        new_route.nodes = copy.deepcopy(route.nodes)
-        new_route.load = route.load
-        new_route.time = route.time
-        new_route.fuel = route.fuel
-        return new_route
-
+                    idx += 1
+
+            if len(route_add.nodes) > 2:
+                new_routes.append(route_add)
+
+        candidate_routes = []
+        while candidate_customers:
+            node = candidate_customers.pop()
+            inserted = False
+
+            for r in candidate_routes:
+                for pos in reversed(range(1, len(r.nodes))):
+                    r.nodes.insert(pos, node)
+                    if self.is_route_feasible(r):
+                        inserted = True
+                        break
+                    r.nodes.pop(pos)
+                if inserted:
+                    break
+
+            if not inserted:
+                rnew = self.create_new_route()
+                rnew.nodes.append(node)
+                rnew.nodes.append(self.instance.depot)
+                candidate_routes.append(rnew)
+
+        new_routes.extend(candidate_routes)
+        return new_routes
+
+    # -------------------------
+    # Debug printing
+    # -------------------------
     def print_solution(self, solution):
-        """Pretty-print the solution as route sequences."""
         res = []
-        for routes in solution:
-            route = []
-            for node in routes.nodes:
-                route.append(node.id)
-            res.append(' -> '.join(route))
+        for r in solution:
+            res.append(" -> ".join(str(n.id) for n in r.nodes))
         res.sort()
-        print(' | '.join(res))
+        print(" | ".join(res))

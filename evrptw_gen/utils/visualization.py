@@ -72,7 +72,7 @@ def save_instances(instances, save_path, template='solomon'):
             v = inst['env']['speed']
 
             env = inst.get("env", {})
-
+            instance_id = inst.get("id", None)
             num_cluster = env.get("num_cluster", env.get("num_clusters", None))
 
             # keep units consistent with the file (hours)
@@ -149,6 +149,8 @@ def save_instances(instances, save_path, template='solomon'):
                 # Extra metadata
                 f.write("\n" + "-" * 20 + "\n")
                 # Write out as readable lines
+
+                f.write(f"instance_id /{instance_id}/\n")
                 f.write(f"number of clusters /{num_cluster}/\n")
                 f.write(f"working_startTime (hour) /{format(working_start_h, '.2f') if working_start_h is not None else 'None'}/\n")
                 f.write(f"working_endTime (hour) /{format(working_end_h, '.2f') if working_end_h is not None else 'None'}/\n")

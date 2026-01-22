@@ -163,6 +163,9 @@ def load_instance(file_path: str, *, drop_depot_station_duplicate: bool = True, 
                 instance["customers"].append(node)
                 continue
 
+            if line.startswith("instance_id"):
+                instance["instance_id"] = int(line.split("/")[1].strip())
+
             # 2) key/value slash line (params + meta)
             m_kv = KV_SLASH_RE.match(line)
             if m_kv:
@@ -214,7 +217,6 @@ def load_instance(file_path: str, *, drop_depot_station_duplicate: bool = True, 
                 f"len(stations)={len(instance['stations'])}. "
                 "Please confirm whether cs_time_to_depot includes the depot-co-located station."
             )
-
     # Build distance matrix
     build_distance_matrix(instance)
 

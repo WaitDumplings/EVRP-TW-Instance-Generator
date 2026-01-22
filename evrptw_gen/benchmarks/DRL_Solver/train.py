@@ -107,14 +107,17 @@ def train(args):
     # Algorithm defintion #
     #######################
 
+    test_num_cus = 5
+    test_num_cs = 2
+
     # 1: for config (决定instance difficulty)
     # 2: for cus / cs size (选择好此时batch的cus / cs size)
     # 3: for iter: (训练次数 + PPO)
     test_envs = None
     config_iter_number = 1  # 或更多
     num_updates = 5000
-    timestamp = time.strftime("%Y%m%d-%H%M%s")
-    save_dir = os.path.join(args.save_dir, timestamp)
+    model_size_name = "Cus_{}_CS_{}".format(test_num_cus, test_num_cs)
+    save_dir = os.path.join(args.save_dir, model_size_name)
     os.makedirs(save_dir, exist_ok=True)
     best_reward = float("-inf")
 
@@ -122,13 +125,11 @@ def train(args):
     num_steps = args.num_steps
     num_envs = args.num_envs
 
-    node_generater_scheduler = NodesGeneratorScheduler(min_customer_num=5, max_customer_num=5, cus_per_cs=2)
+    node_generater_scheduler = NodesGeneratorScheduler(min_customer_num=3, max_customer_num=10, cus_per_cs=2)
     node_generate_policy = "linear" # "linear" / "random"   
     perturb_dict = Config("./evrptw_gen/configs/perturb_config.yaml").setup_env_parameters()
     customer_numbers, charging_stations_numbers = node_generater_scheduler(policy_name=node_generate_policy)
 
-    test_num_cus = 5
-    test_num_cs = 2
     num_steps = args.num_steps
     test_max_step = num_steps
 
@@ -649,7 +650,7 @@ def train(args):
                 print(f"Evaluation over {len(record_info)} episodes: {avg_reward:.3f}, Step: {step}, Avg Done Step: {record_done.mean().item():.2f}, #CS visited: {record_cs.mean().item():.2f}")
                 print('->'.join(record_action))
                 print("Eval cost : {:.4f}s".format(time.time() - t_eval_start))
-                breakpoint()
+
                 if avg_reward > best_reward and len(record_info) == len(batch_test_env_id):
                     best_reward = avg_reward
                     torch.save(agent.state_dict(), os.path.join(save_dir, "best_model.pth"))

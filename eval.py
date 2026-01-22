@@ -10,7 +10,6 @@ import numpy as np
 from tqdm import tqdm
 from distutils.util import strtobool
 import pickle
-from evrptw_gen.utils.nodes_generatro_scheduler import NodesGeneratorScheduler
 from evrptw_gen.configs.load_config import Config
 import torch.nn.functional as F
 
@@ -30,23 +29,10 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 import torch.optim.lr_scheduler as lr_scheduler
 
-from evrptw_gen.benchmarks.models.attention_model_wrapper import Agent
+from evrptw_gen.benchmarks.DRL_Solver.models.attention_model_wrapper import Agent
 
-from evrptw_gen.benchmarks.wrappers.recordWrapper import RecordEpisodeStatistics
-from evrptw_gen.benchmarks.wrappers.syncVectorEnvPomo import SyncVectorEnv
-from evrptw_gen.benchmarks.utils.utils import update_lambda_fail
-
-
-# 1) 设定 GPU 可见性（可根据需要调整/删除）
-# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-
-# 2) 从 benchmarks/train.py 导入 train 函数
-# 方法一：包内绝对导入（推荐，清晰）
-from evrptw_gen.benchmarks.train import train
-
-# 如果你以后想把包名改掉，可以用相对导入（但运行时一定要用 -m）：
-# from .benchmarks.train import train
-
+from evrptw_gen.benchmarks.DRL_Solver.wrappers.recordWrapper import RecordEpisodeStatistics
+from evrptw_gen.benchmarks.DRL_Solver.wrappers.syncVectorEnvPomo import SyncVectorEnv
 
 def parse_args():
     # fmt: off
@@ -131,7 +117,7 @@ def parse_args():
     parser.add_argument(
         "--eval-steps",
         type=int,
-        default=200,
+        default=100,
         help="the number of steps to run in each environment per policy rollout",
     )
     parser.add_argument(
@@ -149,7 +135,7 @@ def parse_args():
     parser.add_argument(
         "--n-traj",
         type=int,
-        default=64,
+        default=1000,
         help="number of trajectories(players) in a vectorized sub-environment",
     )
     parser.add_argument(
@@ -160,10 +146,10 @@ def parse_args():
     )
     parser.add_argument("--use_graph_token", type=bool, default=True, help="whether to use graph token")
     parser.add_argument("--env_mode", type=str, default="eval", help="env mode: train / eval")
-    parser.add_argument("--eval_batch_size", type=int, default=64, help="the batch size for evaluation")
-    parser.add_argument("--checkpoint_path", type=str, default="./checkpoints/run_20260114-144503/best_model.pth", help="path to load model checkpoint")
-    parser.add_argument("--eval_data_path", type=str, default="./eval_data_1000/pickle/evrptw_100C_20R.pkl", help="path to evaluation data when eval_env_mode is solomon_txt")
-    parser.add_argument("--save_log_dir", type=str, default="checkpoints", help="directory to save models and logs")
+    parser.add_argument("--eval_batch_size", type=int, default=1000, help="the batch size for evaluation")
+    parser.add_argument("--checkpoint_path", type=str, default="./checkpoint/Cus5/best_model.pth", help="path to load model checkpoint")
+    parser.add_argument("--eval_data_path", type=str, default="./eval/Cus_15/pickle/evrptw_15C_3R.pkl", help="path to evaluation data when eval_env_mode is solomon_txt")
+    parser.add_argument("--save_log_dir", type=str, default="checkpoint", help="directory to save models and logs")
     parser.add_argument(
         "--config_path",
         type=str,
@@ -234,6 +220,7 @@ def main(args):
         batch_test_env_id = list(
             range(batch, min(batch + batch_size, num_test_envs))
         )
+        breakpoint()
         test_envs = SyncVectorEnv(
             [
                 make_env(
@@ -257,7 +244,7 @@ def main(args):
         # del obs, actions, logprobs, rewards, dones, values, advantages, returns  # 举例
         # torch.cuda.empty_cache()
         test_obs = test_envs.reset()
-        for _ in range(0, args.eval_steps):
+        for step in range(0, args.eval_steps):
             # ALGO LOGIC: action logic
             with torch.no_grad():
                 action, logits = agent(test_obs)
@@ -273,7 +260,9 @@ def main(args):
                 break
             test_envs.close()
     avg_reward = np.mean([item["episode"]["r"] for item in record_info])
+
     print("Eval Time: {:.4f}s".format(time.time() - t_eval_start))
+    print("Feasibility Rate: {:.3f}%".format(test_done.sum()/len(test_done)*100))
     print("Average Reward over {} test episodes: {:.3f}".format(len(record_info), avg_reward))
 
 if __name__ == "__main__":

@@ -136,13 +136,14 @@ class InstanceGenerator:
         base_env['num_customers'] = num_cus
         base_env['num_charging_stations'] = num_cs
             
-        for _ in tqdm(range(self.num_instances)):
+        for id in tqdm(range(self.num_instances)):
             # 关键：浅拷贝即可（前提：后续不要原地改 base_env 的嵌套对象）
             env = base_env.copy()
 
             # add perturbations
             env = add_perturb(env, perturb_dict, perturber)
             inst = gen_one(env)
+            inst['id'] = id
             instances.append(inst)
 
         # 保存阶段不在循环里
