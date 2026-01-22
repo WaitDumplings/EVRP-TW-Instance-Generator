@@ -178,6 +178,5 @@ cplex.log
 *.mps
 *.sol
 
-*.txt
 *.sh
 plot_txt.py

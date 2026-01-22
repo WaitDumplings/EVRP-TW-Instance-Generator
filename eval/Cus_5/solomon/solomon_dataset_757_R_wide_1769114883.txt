@@ -1,0 +1,30 @@
+StringID   Type       x          y          demand     ReadyTime  DueDate    ServiceTime
+D0         d              67.270    15.908      0.000      0.000     23.983      0.000
+S0         f              67.270    15.908      0.000      0.000     23.983      0.000
+S1         f              66.940    99.970      0.000      0.000     23.983      0.000
+S2         f              93.250     3.330      0.000      0.000     23.983      0.000
+C0         c              15.409    49.417      0.028     12.239     15.422      0.064
+C1         c              27.294    21.315      0.006     13.551     16.976      0.053
+C2         c               4.700    15.764      0.005     18.468     21.117      0.053
+C3         c              37.093    24.292      0.003     16.947     19.823      0.052
+C4         c              83.027    89.036      0.005     13.633     16.705      0.053
+
+Q Vehicle fuel tank capacity /129.4200/
+C Vehicle load capacity /1.1200/
+r fuel consumption rate /0.4206/
+g inverse refueling rate /0.0073/
+v average Velocity /28.6800/
+gv charging speed /136.5200/
+
+--------------------
+instance_id /757/
+number of clusters /5/
+working_startTime (hour) /8.00/
+working_endTime (hour) /21.12/
+instance_endTime (hour) /23.98/
+service_time_type /cargoweight/
+demand_type /20_80/
+instance_type /R/
+instance x range /[0.0, 100.0]/
+instance y range /[0.0, 100.0]/
+cs_time_to_depot (hour)/[2.9310546629602223,1.0064373570288443]/
