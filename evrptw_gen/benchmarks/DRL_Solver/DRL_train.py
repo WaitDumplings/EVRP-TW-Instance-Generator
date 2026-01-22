@@ -3,7 +3,7 @@
 import os
 import argparse
 from distutils.util import strtobool
-from train import train
+from evrptw_gen.benchmarks.DRL_Solver.train import train
 
 def parse_args():
     # fmt: off
@@ -83,7 +83,7 @@ def parse_args():
     parser.add_argument(
         "--env-entry-point",
         type=str,
-        default="evrptw_gen.benchmarks.envs.evrp_vector_env:EVRPTWVectorEnv",
+        default="evrptw_gen.benchmarks.DRL_Solver.envs.evrp_vector_env:EVRPTWVectorEnv",
         help="the path to the definition of the environment",
     )
     parser.add_argument(
@@ -109,13 +109,13 @@ def parse_args():
     parser.add_argument(
         "--num-envs",
         type=int,
-        default=132,
+        default=512,
         help="the number of parallel game environments",
     )
     parser.add_argument(
         "--num-steps",
         type=int,
-        default=200,
+        default=60,
         help="the number of steps to run in each environment per policy rollout",
     )
     parser.add_argument(
@@ -142,13 +142,13 @@ def parse_args():
     parser.add_argument(
         "--num-minibatches",
         type=int,
-        default=132,
+        default=8,
         help="the number of mini-batches",
     )
     parser.add_argument(
         "--update-epochs",
         type=int,
-        default=2,
+        default=3,
         help="the K epochs to update the policy",
     )
     parser.add_argument(
@@ -208,13 +208,13 @@ def parse_args():
     parser.add_argument(
         "--n-traj",
         type=int,
-        default=12,
+        default=100,
         help="number of trajectories(players) in a vectorized sub-environment",
     )
     parser.add_argument(
         "--n-test",
         type=int,
-        default=12,
+        default=None,
         help="how many test instance",
     )
     parser.add_argument(
@@ -238,7 +238,7 @@ def parse_args():
         help="test agent",
     )
     parser.add_argument("--use-graph-token", type=bool, default=True)
-    parser.add_argument("--lambda-fail-init", type=float, default=10.0)
+    parser.add_argument("--lambda-fail-init", type=float, default=5.0)
     parser.add_argument("--target-success", type=float, default=0.90)
     parser.add_argument("--lambda-lr", type=float, default=1.0)
     parser.add_argument("--lambda-max", type=float, default=50.0)
@@ -246,14 +246,14 @@ def parse_args():
     parser.add_argument("--lambda_lr_down", type=float, default=2.0, help="dual descent step size when fail_rate < target_fail (constraint over-satisfied)")
     parser.add_argument("--lambda_tolerance", type=float, default=0.05, help="tolerance band around target_fail where lambda is not updated")
     parser.add_argument("--env_mode", type=str, default="train", help="env mode: train / eval")
-    parser.add_argument("--accum_steps", type=int, default=8, help="accum grad steps for updating parametes")
+    parser.add_argument("--accum_steps", type=int, default=1, help="accum grad steps for updating parametes")
     parser.add_argument("--save-dir", type=str, default="./checkpoint", help="save path for checkpoints")
-    parser.add_argument("--eval_batch_size", type=int, default=64, help="the batch size for evaluation")
-    parser.add_argument("--eval_data_path", type=str, default="./eval_data_1000/pickle/evrptw_100C_20R.pkl", help="path to evaluation data when eval_env_mode is solomon_txt")
+    parser.add_argument("--eval_batch_size", type=int, default=1000, help="the batch size for evaluation")
+    parser.add_argument("--eval_data_path", type=str, default="./eval/Cus_5/pickle/evrptw_5C_2R.pkl", help="path to evaluation data when eval_env_mode is solomon_txt")
     parser.add_argument(
         "--config_path",
         type=str,
-        default=os.path.join(os.path.dirname(__file__), "configs", "config.yaml"),
+        default="./evrptw_gen/configs/config.yaml",
         help="path to evrptw_gen config file",
     )
 

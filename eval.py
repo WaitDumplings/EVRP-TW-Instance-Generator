@@ -125,7 +125,7 @@ def parse_args():
     parser.add_argument(
         "--env-entry-point",
         type=str,
-        default="evrptw_gen.benchmarks.envs.evrp_vector_env:EVRPTWVectorEnv",
+        default="evrptw_gen.benchmarks.DRL_Solver.envs.evrp_vector_env:EVRPTWVectorEnv",
         help="the path to the definition of the environment",
     )
     parser.add_argument(

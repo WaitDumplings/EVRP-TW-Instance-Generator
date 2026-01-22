@@ -5,7 +5,7 @@ from gym import spaces
 import time
 
 from evrptw_gen.generator import InstanceGenerator
-from evrptw_gen.benchmarks.envs.evrptw_data import EVRPTWDataset
+from evrptw_gen.benchmarks.DRL_Solver.envs.evrptw_data import EVRPTWDataset
 
 def assign_env_config(self, kwargs):
     """
@@ -78,7 +78,7 @@ class EVRPTWVectorEnv(gym.Env):
 
         assign_env_config(self, kwargs)
         self.gamma = kwargs.get("gamma", 0.99)
-        self.alpha = kwargs.get("alpha", 10.0)
+        self.alpha = kwargs.get("alpha", 5.0)
         self.beta  = kwargs.get("beta", 0.5)
         self.lambda_fail = kwargs.get("lambda_fail", 5.0)
         self.success_bonus = kwargs.get("success_bonus", 10.00)

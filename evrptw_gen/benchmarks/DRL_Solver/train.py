@@ -31,11 +31,11 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 import torch.optim.lr_scheduler as lr_scheduler
 
-from evrptw_gen.benchmarks.models.attention_model_wrapper import Agent
+from evrptw_gen.benchmarks.DRL_Solver.models.attention_model_wrapper import Agent
 
-from evrptw_gen.benchmarks.wrappers.recordWrapper import RecordEpisodeStatistics
-from evrptw_gen.benchmarks.wrappers.syncVectorEnvPomo import SyncVectorEnv
-from evrptw_gen.benchmarks.utils.utils import update_lambda_fail
+from evrptw_gen.benchmarks.DRL_Solver.wrappers.recordWrapper import RecordEpisodeStatistics
+from evrptw_gen.benchmarks.DRL_Solver.wrappers.syncVectorEnvPomo import SyncVectorEnv
+from evrptw_gen.benchmarks.DRL_Solver.utils.utils import update_lambda_fail
 
 def make_env(env_id, seed, cfg=None):
     if cfg is None:
@@ -49,31 +49,6 @@ def make_env(env_id, seed, cfg=None):
         env.observation_space.seed(seed)
         return env
     return thunk
-
-def curriculum_learning_setting(update_step):
-    if update_step < 50:
-        customer_numbers = 5
-        charging_stations_numbers = 2
-        num_steps = 30
-        num_envs = 512
-    elif update_step < 200:
-        customer_numbers = 20
-        charging_stations_numbers = 5
-        num_steps = 60
-        num_envs = 256
-        # num-steps
-    elif update_step < 500:
-        customer_numbers = 50
-        charging_stations_numbers = 10
-        num_steps = 100
-        num_envs = 128
-    else:
-        customer_numbers = 100
-        charging_stations_numbers = 20
-        num_steps = 160
-        num_envs = 96
-    return customer_numbers, charging_stations_numbers, num_steps, num_envs
-
 
 def train(args):
     #########################
@@ -147,19 +122,15 @@ def train(args):
     num_steps = args.num_steps
     num_envs = args.num_envs
 
-    node_generater_scheduler = NodesGeneratorScheduler(min_customer_num=100, max_customer_num=100, cus_per_cs=5)
+    node_generater_scheduler = NodesGeneratorScheduler(min_customer_num=5, max_customer_num=5, cus_per_cs=2)
     node_generate_policy = "linear" # "linear" / "random"   
     perturb_dict = Config("./evrptw_gen/configs/perturb_config.yaml").setup_env_parameters()
     customer_numbers, charging_stations_numbers = node_generater_scheduler(policy_name=node_generate_policy)
-    
-    customer_numbers = 100
-    charging_stations_numbers = 20
 
-    test_num_cus = 100
-    test_num_cs = 20
-    test_max_step = 150
-    
-    num_steps = 150
+    test_num_cus = 5
+    test_num_cs = 2
+    num_steps = args.num_steps
+    test_max_step = num_steps
 
     start = time.time()
     config = Config(args.config_path)
@@ -194,6 +165,7 @@ def train(args):
                 for i in batch_test_env_id
             ]
         )
+
         # args.batch_size = int(num_envs * num_steps)
         # args.minibatch_size = int(args.batch_size // args.num_minibatches)
         # 2. 只在这里创建一套 envs（本 config 共用这一套）
@@ -665,12 +637,6 @@ def train(args):
                     for item in test_info:
                         if "episode" in item.keys():
                             record_info.append(item)
-
-                    if step == 100:
-                        served_cus_ratio = ((record_cus / test_num_cus) <= 0.05)
-                        if served_cus_ratio.all():
-                            print("Early Stop in Evaluation!")
-                            break
 
                     if test_done.all():
                         break
