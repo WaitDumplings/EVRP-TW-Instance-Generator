@@ -81,11 +81,11 @@ time_window_policy_config:
     "narrow":
       alpha: 0.05
       beta: 0.005
-      score: 50
+      score: 0
     "wide":
       alpha: 0.5
       beta: 0.2
-      score: 50
+      score: 100
 
 # demand.py
 demands_policy: null

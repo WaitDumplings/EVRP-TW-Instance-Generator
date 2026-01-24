@@ -51,7 +51,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--save_path",
         type=str,
-        default="./eval/Cus_15/",
+        default="./eval/Cus_1000/",
         help="Directory to save generated instances."
     )
     parser.add_argument(
@@ -69,7 +69,7 @@ if __name__ == "__main__":
         "--customer_range",
         type=int,
         nargs=2,
-        default=[15, 15],
+        default=[1000, 1000],
         help="Range of number of customers (min max)."
     )
     parser.add_argument(
@@ -81,7 +81,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--cus_per_cs",
         type=int,
-        default=3,
+        default=25,
         help="Number of customers per charging station (used if node_generate_policy is 'fixed_cus_per_cs')."
     )
     parser.add_argument(

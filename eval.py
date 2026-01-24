@@ -147,8 +147,8 @@ def parse_args():
     parser.add_argument("--use_graph_token", type=bool, default=True, help="whether to use graph token")
     parser.add_argument("--env_mode", type=str, default="eval", help="env mode: train / eval")
     parser.add_argument("--eval_batch_size", type=int, default=1000, help="the batch size for evaluation")
-    parser.add_argument("--checkpoint_path", type=str, default="./checkpoint/Cus5/best_model.pth", help="path to load model checkpoint")
-    parser.add_argument("--eval_data_path", type=str, default="./eval/Cus_15/pickle/evrptw_15C_3R.pkl", help="path to evaluation data when eval_env_mode is solomon_txt")
+    parser.add_argument("--checkpoint_path", type=str, default="./checkpoint/Cus_5_CS_2/best_model.pth", help="path to load model checkpoint")
+    parser.add_argument("--eval_data_path", type=str, default="./eval/Cus_5/pickle/evrptw_5C_2R.pkl", help="path to evaluation data when eval_env_mode is solomon_txt")
     parser.add_argument("--save_log_dir", type=str, default="checkpoint", help="directory to save models and logs")
     parser.add_argument(
         "--config_path",
@@ -220,7 +220,7 @@ def main(args):
         batch_test_env_id = list(
             range(batch, min(batch + batch_size, num_test_envs))
         )
-        breakpoint()
+
         test_envs = SyncVectorEnv(
             [
                 make_env(

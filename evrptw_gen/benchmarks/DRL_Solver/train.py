@@ -107,8 +107,8 @@ def train(args):
     # Algorithm defintion #
     #######################
 
-    test_num_cus = 5
-    test_num_cs = 2
+    test_num_cus = 100
+    test_num_cs = 20
 
     # 1: for config (决定instance difficulty)
     # 2: for cus / cs size (选择好此时batch的cus / cs size)
@@ -125,7 +125,7 @@ def train(args):
     num_steps = args.num_steps
     num_envs = args.num_envs
 
-    node_generater_scheduler = NodesGeneratorScheduler(min_customer_num=3, max_customer_num=10, cus_per_cs=2)
+    node_generater_scheduler = NodesGeneratorScheduler(min_customer_num=10, max_customer_num=20, cus_per_cs=3)
     node_generate_policy = "linear" # "linear" / "random"   
     perturb_dict = Config("./evrptw_gen/configs/perturb_config.yaml").setup_env_parameters()
     customer_numbers, charging_stations_numbers = node_generater_scheduler(policy_name=node_generate_policy)
@@ -143,7 +143,6 @@ def train(args):
         # 1. 选本轮使用的 config_path 和 n_traj
         # config_path = args.config_path[config_iter]
         # n_traj_num = args.n_traj[config_iter]
-        scale = 1.0 / (customer_numbers ** 0.5)
         config_path = args.config_path
         n_traj_num = args.n_traj
         test_traj_num = args.test_agent
@@ -519,7 +518,7 @@ def train(args):
                         gn_backbone = grad_norm(agent.backbone.parameters())
                         gn_critic   = grad_norm(agent.critic.parameters())
                         print(f"[GradSplit pre-clip] backbone={gn_backbone:.6f}, critic={gn_critic:.6f}")
-                        print(f"[Loss] pg_loss={pg_loss:.6f}, entropy_loss={args.ent_coef * entropy_loss:.6f}, value_loss={v_loss * scale:.6f}")
+                        print(f"[Loss] pg_loss={pg_loss:.6f}, entropy_loss={args.ent_coef * entropy_loss:.6f}, value_loss={v_loss:.6f}")
 
                     # ---------- Decide whether to step ----------
                     is_last_minibatch = (start + envsperbatch) >= num_envs
@@ -577,7 +576,7 @@ def train(args):
             # Update Next Environment ##
 
             # A policy to update the customer_numbers and charging_stations_numbers and other env parameters (Curriculum Learning)
-            if (update_step + 1) % 10 == 0:
+            if (update_step + 1) % 2 == 0:
                 t_eval_start = time.time()
                 # Evaluation Process
                 # TRY NOT TO MODIFY: start the game
@@ -656,7 +655,9 @@ def train(args):
                     torch.save(agent.state_dict(), os.path.join(save_dir, "best_model.pth"))
                 torch.save(agent.state_dict(), os.path.join(save_dir, "cur_model.pth"))
                 print("-----------------------------")
+                print("Before CusNumbers:", customer_numbers, "CS Numbers:", charging_stations_numbers)
                 customer_numbers, charging_stations_numbers = node_generater_scheduler(policy_name=node_generate_policy)
+                print("After CusNumbers:", customer_numbers, "CS Numbers:", charging_stations_numbers)
                 # del record_info, record_done_total, record_cs_total  # 这些是 numpy，主要是 CPU 内存
                 # torch.cuda.empty_cache()
             # envs.close()

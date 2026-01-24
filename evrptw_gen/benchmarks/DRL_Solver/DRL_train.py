@@ -109,13 +109,13 @@ def parse_args():
     parser.add_argument(
         "--num-envs",
         type=int,
-        default=1024,
+        default=256,
         help="the number of parallel game environments",
     )
     parser.add_argument(
         "--num-steps",
         type=int,
-        default=20,
+        default=40,
         help="the number of steps to run in each environment per policy rollout",
     )
     parser.add_argument(
@@ -142,7 +142,7 @@ def parse_args():
     parser.add_argument(
         "--num-minibatches",
         type=int,
-        default=8,
+        default=16,
         help="the number of mini-batches",
     )
     parser.add_argument(
@@ -208,7 +208,7 @@ def parse_args():
     parser.add_argument(
         "--n-traj",
         type=int,
-        default=100,
+        default=40,
         help="number of trajectories(players) in a vectorized sub-environment",
     )
     parser.add_argument(
@@ -247,9 +247,9 @@ def parse_args():
     parser.add_argument("--lambda_tolerance", type=float, default=0.05, help="tolerance band around target_fail where lambda is not updated")
     parser.add_argument("--env_mode", type=str, default="train", help="env mode: train / eval")
     parser.add_argument("--accum_steps", type=int, default=1, help="accum grad steps for updating parametes")
-    parser.add_argument("--save-dir", type=str, default="./checkpoint", help="save path for checkpoints")
-    parser.add_argument("--eval_batch_size", type=int, default=1000, help="the batch size for evaluation")
-    parser.add_argument("--eval_data_path", type=str, default="./eval/Cus_5/pickle/evrptw_5C_2R.pkl", help="path to evaluation data when eval_env_mode is solomon_txt")
+    parser.add_argument("--save-dir", type=str, default="./checkpoint/TW_Regime/Loose", help="save path for checkpoints")
+    parser.add_argument("--eval_batch_size", type=int, default=100, help="the batch size for evaluation")
+    parser.add_argument("--eval_data_path", type=str, default="./eval/Cus_100/pickle/evrptw_100C_20R.pkl", help="path to evaluation data when eval_env_mode is solomon_txt")
     parser.add_argument(
         "--config_path",
         type=str,
