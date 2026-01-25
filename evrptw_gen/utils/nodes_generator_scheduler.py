@@ -19,7 +19,7 @@ class NodesGeneratorScheduler:
         random_cus = self.rng.randint(0, self.max_customer_num - self.min_customer_num)
         num_cus = random_cus + self.min_customer_num
         num_cs_ub = max(1, num_cus // self.cus_per_cs)
-        num_cs = self.rng.randint(1, num_cs_ub)
+        num_cs = max(1, self.rng.randint(num_cs_ub//2, num_cs_ub))
         return num_cus, num_cs
 
     

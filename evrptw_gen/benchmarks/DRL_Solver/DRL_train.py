@@ -208,7 +208,7 @@ def parse_args():
     parser.add_argument(
         "--n-traj",
         type=int,
-        default=20,
+        default=40,
         help="number of trajectories(players) in a vectorized sub-environment",
     )
     parser.add_argument(

@@ -129,7 +129,7 @@ def train(args):
     node_generate_policy = "linear" # "linear" / "random"   
     perturb_dict = Config("./evrptw_gen/configs/perturb_config.yaml").setup_env_parameters()
     customer_numbers, charging_stations_numbers = node_generater_scheduler(policy_name=node_generate_policy)
-
+    breakpoint()
     num_steps = args.num_steps
     test_max_step = num_steps
 
