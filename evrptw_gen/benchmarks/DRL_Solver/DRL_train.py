@@ -115,7 +115,7 @@ def parse_args():
     parser.add_argument(
         "--num-steps",
         type=int,
-        default=40,
+        default=150,
         help="the number of steps to run in each environment per policy rollout",
     )
     parser.add_argument(
@@ -208,7 +208,7 @@ def parse_args():
     parser.add_argument(
         "--n-traj",
         type=int,
-        default=40,
+        default=20,
         help="number of trajectories(players) in a vectorized sub-environment",
     )
     parser.add_argument(
@@ -237,7 +237,7 @@ def parse_args():
         default=1,
         help="test agent",
     )
-    parser.add_argument("--use-graph-token", type=bool, default=True)
+    parser.add_argument("--use-graph-token", type=bool, default=False)
     parser.add_argument("--lambda-fail-init", type=float, default=10.0)
     parser.add_argument("--target-success", type=float, default=0.95)
     parser.add_argument("--lambda-lr", type=float, default=1.0)
@@ -246,7 +246,7 @@ def parse_args():
     parser.add_argument("--lambda_lr_down", type=float, default=2.0, help="dual descent step size when fail_rate < target_fail (constraint over-satisfied)")
     parser.add_argument("--lambda_tolerance", type=float, default=0.05, help="tolerance band around target_fail where lambda is not updated")
     parser.add_argument("--env_mode", type=str, default="train", help="env mode: train / eval")
-    parser.add_argument("--accum_steps", type=int, default=1, help="accum grad steps for updating parametes")
+    parser.add_argument("--accum_steps", type=int, default=4, help="accum grad steps for updating parametes")
     parser.add_argument("--save-dir", type=str, default="./checkpoint/TW_Regime/Loose", help="save path for checkpoints")
     parser.add_argument("--eval_batch_size", type=int, default=100, help="the batch size for evaluation")
     parser.add_argument("--eval_data_path", type=str, default="./eval/Cus_100_sample/pickle/evrptw_100C_20R.pkl", help="path to evaluation data when eval_env_mode is solomon_txt")

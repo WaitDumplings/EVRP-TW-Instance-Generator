@@ -125,7 +125,7 @@ def train(args):
     num_steps = args.num_steps
     num_envs = args.num_envs
 
-    node_generater_scheduler = NodesGeneratorScheduler(min_customer_num=10, max_customer_num=20, cus_per_cs=3)
+    node_generater_scheduler = NodesGeneratorScheduler(min_customer_num=100, max_customer_num=100, cus_per_cs=5)
     node_generate_policy = "linear" # "linear" / "random"   
     perturb_dict = Config("./evrptw_gen/configs/perturb_config.yaml").setup_env_parameters()
     customer_numbers, charging_stations_numbers = node_generater_scheduler(policy_name=node_generate_policy)
@@ -576,7 +576,7 @@ def train(args):
             # Update Next Environment ##
 
             # A policy to update the customer_numbers and charging_stations_numbers and other env parameters (Curriculum Learning)
-            if (update_step + 1) % 2 == 0:
+            if (update_step + 1) % 10 == 0:
                 t_eval_start = time.time()
                 # Evaluation Process
                 # TRY NOT TO MODIFY: start the game
